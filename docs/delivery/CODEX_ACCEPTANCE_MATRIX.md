@@ -1,7 +1,7 @@
 # Codex Local-first 开发验收矩阵
 
-版本：v2.0  
-状态：逐卡验收基线
+版本：v2.1
+状态：阶段门禁验收基线
 
 ## 1. 验收等级
 
@@ -27,7 +27,24 @@
 | G-B | `pnpm verify:e2e:p0b` | 五采集/导入/Fragment/复盘/词典/反向记忆 |
 | G-R | `pnpm verify:release` | 双平台包、迁移、容量、删除、签名/回滚 |
 
-## 3. 逐卡矩阵
+## 3. 阶段门禁矩阵
+
+Codex 只在阶段末给出正式 `PASS / REJECT`；卡级条目是阶段验收时必须逐项覆盖的检查清单，不再要求每卡单独等待 Codex。S0 与 S1 因为分别冻结可运行骨架和本地持久化技术路线，保留单卡硬门。
+
+| 阶段 | 卡范围 | 阶段必跑门 | 统一证据包 | 直接 REJECT |
+|---|---|---|---|---|
+| S0 | M0-01 | 冷安装 / Build / TSC / G-Q / 双平台 smoke / 真实启动 | Desktop、Extension、Host 可运行产物；双平台 Artifact | 假绿；产物缺文件；技术栈漂移；任一应用不能启动 |
+| S1 | M0-02 | G-LD `--spike` | 加密/FTS5/vec/Crash/删除/双平台 Packaged App/ADR | 只开发态通过；静默降级；擅改云 DB |
+| S2 | M0-03..05 | G-Q / G-LD / G-DS / G-CT | 三 Seam、Migration、攻击测试、Key/IPC、离线/抓包、云字段清单 | DB/path/key 泄漏；数据不可恢复；云事实源；本地被登录阻塞 |
+| S3 | M1-01..03 | G-Q / G-BR / G-DS / G-CT / G-LD | 双平台 Host、威胁模型、重放/队列、事务/P95、五 mode | 未认证 Bridge；明文队列；丢失/双写；云中转 |
+| S4 | M2-01..04 | G-Q / G-LD / G-DS / G-CT / G-EV | Job 恢复、Asset 状态、三 Route 抓包/预算、本地 Recall | 云 Queue/索引；Key 上云；预算绕过；AI 失败阻断本地资产 |
+| S5 | M3-01..M4-02 | G-Q / G-LD / G-DS / G-EV | 两真实项目、Brief 版本、引用/反证/Scope、Decision/Outcome 链 | 推断写事实；伪引用；跨客户；历史覆盖 |
+| S6 | M5-01..03 | G-Q / G-LD / G-DS / G-EV / G-A | Candidate→Active、跨项目 Recall、删除全层反查、证书、P0-A 录屏 | 自动记忆；跨 Scope；删除仍召回；离线假完成 |
+| S7 | M6-01..05 | G-Q / G-BR / G-LD / G-EV | 五采集、页面矩阵、500/1+1/2,000、Fragment 父链/删除 | 云渲染/上传；配额可绕；采集越界；父删子留 |
+| S8 | M6-06..08 | G-Q / G-LD / G-DS / G-EV / G-B | Review 来源/版本、词典 Scope、反向记忆阈值/关闭、P0-B 录屏 | 编造；确认前写 Memory；跨 Scope；关闭仍提醒 |
+| S9 | M7-01..03 | 全部门 / G-R | 双平台发布包、冻结 Evals、红队、容量、迁移、签名/公证、回滚 | P0 缺陷；退化不阻断；诊断泄漏；安装/升级不可复现 |
+
+## 4. 卡级检查项（阶段内聚合）
 
 | 任务 | 级别 | 依赖 | 必跑门 | 关键证据 | 直接 REJECT |
 |---|---|---|---|---|---|
@@ -62,7 +79,7 @@
 | M7-02 | H2 | M7-01 | G-DS/G-R 子门 | 压测、诊断抓包、成本、更新/回滚 | 诊断上传正文/path/query；更新破坏 DB |
 | M7-03 | H0 | 全部 PASS | G-A/G-B/G-R | 双平台包/录屏、SBOM、签名、公证、回滚 | P0 缺陷；无网/无账号不可用；安装/升级不可复现 |
 
-## 4. P0-A 场景
+## 5. P0-A 场景
 
 1. 无账号、无互联网启动 Desktop，创建本地资料库。
 2. Desktop 暂停时 Extension 保存 Link/Viewport；重启后幂等落本地。
@@ -77,13 +94,13 @@
 
 任一步失败，P0-A 不通过。
 
-## 5. 删除证书验收
+## 6. 删除证书验收
 
 Completed 证书必须列出：resource hash、request/suppress/execute/complete 时间、DB/FTS/vec/Graph/Job/Cache/Object/Temp/App-managed Backup 各面结果、失败重试、应用/数据版本。
 
 必须列出 exclusions：OS/企业备份、用户复制导出、Local/BYOK/Managed Provider 留存。设备不可访问必须为 Pending，不能产生 Completed 时间。
 
-## 6. 最终证据包
+## 7. 最终证据包
 
 - Git/Node/pnpm/Electron/SQLite/FTS5/sqlite-vec/双平台版本。
 - 九门完整日志与退出码。

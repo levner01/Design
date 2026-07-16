@@ -1,7 +1,7 @@
 # MVP Epic、Story 与开发任务基线
 
-版本：v1.0 Local-first  
-状态：已确认；GLM 逐卡实现，Codex 逐卡验收
+版本：v1.1 Local-first
+状态：已确认；GLM 逐卡实现与自测，Codex 按阶段门禁统一验收
 
 ## 1. 已确认决策
 
@@ -132,4 +132,3 @@
 6. 用户内容不进入 Control Plane；三 Route 数据去向可解释。
 7. 删除证书只陈述已验证范围；离线 Pending 不冒充完成。
 8. GLM 完整交付，Codex 对当前卡给出 PASS，才算关闭。
-

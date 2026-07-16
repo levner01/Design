@@ -1,6 +1,6 @@
 # Codex ↔ GLM 5.2 开发交接协议
 
-版本：v2.0  
+版本：v2.1
 状态：Local-first 已确认执行基线
 
 ## 1. 分工
@@ -8,7 +8,7 @@
 ### Codex
 
 - 负责需求理解、任务拆解、Interface/Seam 判定、开发验收和测试结论。
-- 每次只向 GLM 下发一张任务卡；上一卡未 `PASS`，不得开始下一卡。
+- 每次向 GLM 下发一个阶段包；阶段内按任务卡依赖顺序实现，上一阶段未 `PASS`，不得开始下一阶段。
 - 审查差异、迁移、测试、可视证据、安全、成本和删除证明。
 - 发现 PRD、架构和实现冲突时，先判定任务修订、ADR 或需求变更。
 
@@ -63,18 +63,33 @@
 
 30 天 SLA 仅对 App 获得执行机会、磁盘可访问的应用管理本地面成立；设备持续离线时显示 Pending、最后尝试时间和恢复执行方法。
 
-## 4. 单卡串行协议
+## 4. 阶段门禁协议
 
 ```text
-PLANNED → READY → IN DEVELOPMENT → IN ACCEPTANCE → PASS
-                         ↘ BLOCKED        ↘ REJECT → IN DEVELOPMENT
+STAGE PLANNED → READY → IN DEVELOPMENT → STAGE ACCEPTANCE → PASS
+                         ↘ PARTIAL HANDOFF        ↘ REJECT → IN DEVELOPMENT
 ```
 
-1. Codex 下发当前卡、允许目录、依赖 PASS 证据和基线 SHA。
-2. GLM 只做当前卡；需要跨卡或跨目录先提交 RFC。
-3. GLM 完整交付后进入验收；Codex 未结论前不下发下一卡。
-4. H0 安全、内容外发、密钥、删除、迁移、预算问题只允许 `PASS/REJECT`。
-5. `CONDITIONAL PASS` 只适用于非阻塞展示/观测补项，并登记截止卡。
+1. Codex 下发当前阶段、所含任务卡、允许目录、依赖 PASS 证据和基线 SHA。
+2. GLM 在阶段内按依赖顺序开发；每卡独立 Commit、测试日志和交付记录，但无需等待 Codex 逐卡验收。
+3. 每卡完成后 GLM 自行运行 `verify:quick` 与专项门；失败不得开始依赖它的下一卡。
+4. 阶段全部完成后进入统一验收；Codex 复跑阶段矩阵并只给一次正式结论。
+5. `M0-01` 与 `M0-02` 分别涉及可运行骨架和持久化技术决策，保留单卡硬门；从 `M0-03` 起按 3–5 卡组包。
+6. H0 安全、内容外发、密钥、删除、迁移、预算问题只允许 `PASS/REJECT`。
+7. `CONDITIONAL PASS` 只适用于非阻塞展示/观测补项，并登记截止阶段。
+
+### 4.1 立即停工与 Partial Handoff
+
+以下问题不能等到阶段末才暴露：
+
+- Spike 失败或需要更换已冻结技术路线；
+- 数据丢失、Migration 不可恢复、密钥/内容明文、未经授权的云外发；
+- Renderer/Extension 越权、通用 IPC、Bridge 可伪造/重放、删除假完成；
+- macOS/Windows 任一目标平台不能安装、启动或运行关键原生能力；
+- 需要修改任务 Allowlist 外目录或产品/架构/ADR/交付基线；
+- 上一任务卡硬门无法真实通过，只能跳过或伪造测试。
+
+触发时 GLM 必须停在最后一个可复现 Commit，提交触发事实、失败日志、受影响卡、候选方案和回滚点。Codex 先做方向判断，再决定修复、拆阶段或进入 ADR。
 
 ## 5. 变更申请
 
@@ -95,7 +110,7 @@ AI 外发、成本、删除影响：
 ## 6. GLM 交付模板
 
 ```text
-任务卡 / 基线 SHA / 交付 SHA
+阶段 / 所含任务卡 / 基线 SHA / 各卡 Commit / 交付 SHA
 1. 实现摘要
 2. 修改文件与理由
 3. Interface/Seam 变化

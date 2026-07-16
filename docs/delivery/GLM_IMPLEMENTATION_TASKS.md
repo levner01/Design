@@ -1,28 +1,60 @@
 # GLM 5.2 Local-first MVP 实施任务卡
 
-版本：v2.0  
-状态：逐卡下发  
+版本：v2.1
+状态：阶段包下发、阶段门禁验收
 协议：[HANDOFF_PROTOCOL.md](HANDOFF_PROTOCOL.md)  
 验收：[CODEX_ACCEPTANCE_MATRIX.md](CODEX_ACCEPTANCE_MATRIX.md)
 
 ## 1. 执行规则与依赖
 
-- 任意时刻只允许一张卡 `IN DEVELOPMENT`；本文不是一次性交给 GLM 的大包。
-- 每卡“修改目录”是 Allowlist；默认禁止改产品、架构、交付基线。
-- 每卡必须先通过 `pnpm verify:quick`，再通过列出的专项门。
+- 任务卡仍是实现、提交和追责的最小单位；Codex 改为按阶段包统一验收，不再逐卡阻塞。
+- 任意时刻只允许一个阶段包 `IN DEVELOPMENT`。GLM 在阶段内按依赖顺序实现，每卡独立 Commit、独立自测、独立交付记录。
+- 每卡“修改目录”仍是 Allowlist；默认禁止改产品、架构、交付基线。
+- 每卡完成时 GLM 必须自行通过 `pnpm verify:quick` 和该卡专项门；Codex 在阶段末复跑全部门并统一判定。
+- `M0-01` 是可运行骨架硬门，`M0-02` 是本地持久化技术决策硬门；两者必须单独验收。自 `M0-03` 起按 3–5 张卡组包。
+- 阶段内一旦触发“立即停工条件”，GLM 不得带病推进后续卡，必须停在最后一个可复现 Commit 并提交 Partial Handoff。
 - M0 必须按编号串行；M1–M5 构成 P0-A；P0-A 全绿后才进入 M6；M7 为发布硬化。
 
 ```text
-M0 Electron + Local Data Foundation
-→ M1 Extension ↔ Native Host ↔ Local Bridge
-→ M2 Local Asset + Jobs + AI + Search
-→ M3 Local Project + Brief
-→ M4 Evidence + Decision
-→ M5 Memory + Local Deletion
-→ GATE-P0A
-→ M6 P0-B
-→ M7 Release
+S0 M0-01 Bootstrap
+→ S1 M0-02 Persistence Decision
+→ S2 M0-03..05 Local Foundation
+→ S3 M1-01..03 Capture Ingress
+→ S4 M2-01..04 Asset Intelligence
+→ S5 M3-01..M4-02 Project Decision
+→ S6 M5-01..03 + GATE-P0A
+→ S7 M6-01..05 P0-B Capture / Import
+→ S8 M6-06..08 + GATE-P0B
+→ S9 M7-01..03 Release
 ```
+
+### 1.1 阶段包与统一验收点
+
+| 阶段 | 任务卡 | Codex 统一验收重点 | 允许继续的前置结论 |
+|---|---|---|---|
+| S0 Bootstrap | M0-01 | 冷安装、真实 Desktop/Extension/Host 启动、双平台包、非假绿 G-Q | S0 PASS |
+| S1 Persistence Decision | M0-02 | 加密 SQLite/FTS5/sqlite-vec、Crash、删除、双平台 Packaged App、ADR | S1 PASS 或 Codex 批准替代 ADR |
+| S2 Local Foundation | M0-03..M0-05 | 三本地 Seam、Migration、IPC/Key、安全、离线核心、Control Plane Allowlist | S2 PASS |
+| S3 Capture Ingress | M1-01..M1-03 | Native Host/Bridge/队列/幂等落库、伪来源与重放、五 mode Contract | S3 PASS |
+| S4 Asset Intelligence | M2-01..M2-04 | Durable Job、Asset 状态、三 AI Route、预算竞态、本地 Search/Recall | S4 PASS |
+| S5 Project Decision | M3-01..M4-02 | Brief Revision、引用、正反边界证据、Decision/Outcome 版本链、离线降级 | S5 PASS |
+| S6 P0-A | M5-01..M5-03 | Memory Candidate/Scope、跨项目 Recall、全层删除、`pending_device_execution`、P0-A E2E | S6 / GATE-P0A PASS |
+| S7 P0-B Capture | M6-01..M6-05 | 五种采集、500/1+1/2,000、Fragment 父链、页面与文件降级 | S7 PASS |
+| S8 P0-B Cognition | M6-06..M6-08 | Project Review、个人词典、反向记忆、来源/阈值/关闭、P0-B E2E | S8 / GATE-P0B PASS |
+| S9 Release | M7-01..M7-03 | 冻结 Evals、诊断脱敏、容量、升级/回滚、签名/公证、双平台发布 | S9 / Release PASS |
+
+### 1.2 阶段内立即停工条件
+
+出现以下任一情况，GLM 必须停止当前阶段，不能靠“先把后面做完再说”掩盖偏差：
+
+1. 上一张卡的硬门失败，或测试只能靠跳过、Mock 假绿、删除断言来通过。
+2. Spike 结果要求更换数据库、加密、向量、Electron、Bridge、AI Route 或顶层架构。
+3. 出现数据丢失、Migration 不可恢复、明文密钥/内容、未授权外发、通用 IPC、Bridge 可伪造或删除假完成。
+4. 需要越过任务 Allowlist，或修改产品/架构/ADR/交付基线才能继续。
+5. 上游 Public Interface/Contract 被破坏，导致本阶段后续卡建立在临时兼容或私有穿透上。
+6. macOS/Windows 任一目标平台无法安装、启动或运行关键原生能力。
+
+未触发上述条件时，GLM 无需等待 Codex 逐卡回复，可在同一阶段内继续开发。
 
 ## 2. M0：Electron 与本地数据基线
 
