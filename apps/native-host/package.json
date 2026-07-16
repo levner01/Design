@@ -1,0 +1,26 @@
+{
+  "name": "@designwan/native-host",
+  "version": "0.0.0",
+  "private": true,
+  "description": "DesignWan Native Messaging Host 骨架。校验 Extension Origin、握手、转发小型命令；不持久化业务内容。",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "designwan-native-host": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "lint": "tsc --noEmit -p tsconfig.json",
+    "start": "node dist/index.js",
+    "test": "echo 'no native-host tests yet (M0-01 skeleton)' && exit 0",
+    "clean": "rimraf dist *.tsbuildinfo"
+  },
+  "dependencies": {
+    "@designwan/contracts": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "rimraf": "^6.0.1",
+    "typescript": "^5.6.3"
+  }
+}

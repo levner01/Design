@@ -1,0 +1,18 @@
+{
+  "extends": "../../../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "./",
+    "outDir": "../../dist/renderer",
+    "composite": true,
+    "tsBuildInfoFile": "../../.tsbuildinfo/renderer.tsbuildinfo",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"]
+  },
+  "include": ["./*.ts", "./*.html"],
+  "exclude": ["node_modules"],
+  "references": [
+    { "path": "../../../../packages/contracts" },
+    { "path": "../../../../packages/ui" }
+  ]
+}

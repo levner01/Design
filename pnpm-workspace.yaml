@@ -1,0 +1,7 @@
+packages:
+  # 顶层应用包
+  - 'apps/*'
+  # 顶层共享包
+  - 'packages/*'
+allowBuilds:
+  electron: false

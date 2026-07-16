@@ -1,0 +1,28 @@
+{
+  "name": "@designwan/modules",
+  "version": "0.0.0",
+  "private": true,
+  "description": "DesignWan 业务模块层：Capture/Assets/Projects/Decisions/Memory/Retrieval/Graph/Deletion。仅依赖 contracts。",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "lint": "tsc --noEmit -p tsconfig.json",
+    "test": "echo 'no business modules yet (M0-01 skeleton)' && exit 0",
+    "clean": "rimraf dist *.tsbuildinfo"
+  },
+  "dependencies": {
+    "@designwan/contracts": "workspace:*"
+  },
+  "devDependencies": {
+    "rimraf": "^6.0.1",
+    "typescript": "^5.6.3"
+  }
+}

@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema",
+  "manifestVersion": "0.1.0",
+  "description": "DesignWan Prompt Manifest 骨架。每个 Prompt 必须声明 Schema 版本、外发字段、Route Policy 与 Dataset 版本；由 GLM-M2-04 / GLM-M7-01 填充。",
+  "prompts": [
+    {
+      "id": "asset-analysis",
+      "version": "0.0.0",
+      "path": "asset-analysis/",
+      "responsibleTask": "GLM-M2-04",
+      "status": "not-started"
+    },
+    {
+      "id": "retrieval-rerank",
+      "version": "0.0.0",
+      "path": "retrieval-rerank/",
+      "responsibleTask": "GLM-M2-04",
+      "status": "not-started"
+    },
+    {
+      "id": "requirement-analysis",
+      "version": "0.0.0",
+      "path": "requirement-analysis/",
+      "responsibleTask": "GLM-M3-02",
+      "status": "not-started"
+    },
+    {
+      "id": "design-proposition",
+      "version": "0.0.0",
+      "path": "design-proposition/",
+      "responsibleTask": "GLM-M4-02",
+      "status": "not-started"
+    },
+    {
+      "id": "memory-extraction",
+      "version": "0.0.0",
+      "path": "memory-extraction/",
+      "responsibleTask": "GLM-M5-01",
+      "status": "not-started"
+    },
+    {
+      "id": "project-review",
+      "version": "0.0.0",
+      "path": "project-review/",
+      "responsibleTask": "GLM-M6-06",
+      "status": "not-started"
+    },
+    {
+      "id": "memory-consolidation",
+      "version": "0.0.0",
+      "path": "memory-consolidation/",
+      "responsibleTask": "GLM-M6-08",
+      "status": "not-started"
+    }
+  ]
+}

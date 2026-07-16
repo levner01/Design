@@ -1,0 +1,21 @@
+{
+  "name": "@designwan/browser-extension",
+  "version": "0.0.0",
+  "private": true,
+  "description": "DesignWan Chrome MV3 采集扩展骨架。仅依赖 contracts；不持有长期 Token、不暴露任意 Origin。",
+  "type": "module",
+  "scripts": {
+    "build": "tsc -b && node scripts/copy-manifest.mjs",
+    "lint": "tsc --noEmit -p tsconfig.json",
+    "test": "node --test scripts/manifest-parse.test.mjs",
+    "clean": "rimraf dist *.tsbuildinfo"
+  },
+  "dependencies": {
+    "@designwan/contracts": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.0.287",
+    "rimraf": "^6.0.1",
+    "typescript": "^5.6.3"
+  }
+}

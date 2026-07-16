@@ -1,0 +1,58 @@
+name: Release Smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry-run only (no signing)'
+        required: false
+        default: 'true'
+
+jobs:
+  build-mac:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: corepack enable
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+          run_install: false
+      - run: corepack pnpm install --frozen-lockfile
+      - run: corepack pnpm --filter @designwan/desktop build
+      - name: Package macOS (arm64 + x64)
+        run: corepack pnpm --filter @designwan/desktop package:mac
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-mac
+          path: apps/desktop/release/*
+          if-no-files-found: warn
+
+  build-win:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: corepack enable
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+          run_install: false
+      - run: corepack pnpm install --frozen-lockfile
+      - run: corepack pnpm --filter @designwan/desktop build
+      - name: Package Windows (x64)
+        run: corepack pnpm --filter @designwan/desktop package:win
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-win
+          path: apps/desktop/release/*
+          if-no-files-found: warn

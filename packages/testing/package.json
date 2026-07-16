@@ -1,0 +1,32 @@
+{
+  "name": "@designwan/testing",
+  "version": "0.0.0",
+  "private": true,
+  "description": "DesignWan 测试工具与 Fixture 工厂。仅依赖 contracts；不得 import modules/platform/ui 实现细节。",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./fixtures": {
+      "types": "./dist/fixtures/index.d.ts",
+      "import": "./dist/fixtures/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "lint": "tsc --noEmit -p tsconfig.json",
+    "test": "echo 'testing utilities skeleton' && exit 0",
+    "clean": "rimraf dist *.tsbuildinfo"
+  },
+  "dependencies": {
+    "@designwan/contracts": "workspace:*"
+  },
+  "devDependencies": {
+    "rimraf": "^6.0.1",
+    "typescript": "^5.6.3"
+  }
+}

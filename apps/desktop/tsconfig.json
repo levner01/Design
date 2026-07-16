@@ -1,0 +1,12 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": true
+  },
+  "files": [],
+  "references": [
+    { "path": "./src/main" },
+    { "path": "./src/preload" },
+    { "path": "./src/renderer" }
+  ]
+}

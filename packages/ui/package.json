@@ -1,0 +1,36 @@
+{
+  "name": "@designwan/ui",
+  "version": "0.0.0",
+  "private": true,
+  "description": "DesignWan UI 共享层：View Model 类型与 Design Token。仅依赖 contracts；不引入 React 以保持骨架轻量。",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./tokens": {
+      "types": "./dist/tokens.d.ts",
+      "import": "./dist/tokens.js"
+    },
+    "./view-models": {
+      "types": "./dist/view-models.d.ts",
+      "import": "./dist/view-models.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "lint": "tsc --noEmit -p tsconfig.json",
+    "test": "echo 'no UI tests yet (M0-01 skeleton)' && exit 0",
+    "clean": "rimraf dist *.tsbuildinfo"
+  },
+  "dependencies": {
+    "@designwan/contracts": "workspace:*"
+  },
+  "devDependencies": {
+    "rimraf": "^6.0.1",
+    "typescript": "^5.6.3"
+  }
+}

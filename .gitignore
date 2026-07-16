@@ -83,6 +83,8 @@ signing/
 *.cert
 *.cert.p12
 entitlements.*.plist
+# 例外：buildResources 下的 entitlements 模板是源文件，非签名产物
+!apps/desktop/buildResources/entitlements.mac.plist
 *.provisionprofile
 
 # IDE 与编辑器

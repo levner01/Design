@@ -1,0 +1,20 @@
+{
+  "name": "@designwan/managed-gateway",
+  "version": "0.0.0",
+  "private": true,
+  "description": "DesignWan Managed Stateless AI Gateway 空骨架。仅中转，不持久化 Prompt/Response/截图/Brief。",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc -b",
+    "lint": "tsc --noEmit -p tsconfig.json",
+    "start": "node dist/index.js",
+    "test": "echo 'no gateway tests yet (M0-01 skeleton)' && exit 0",
+    "clean": "rimraf dist *.tsbuildinfo"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "rimraf": "^6.0.1",
+    "typescript": "^5.6.3"
+  }
+}

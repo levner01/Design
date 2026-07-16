@@ -1,0 +1,20 @@
+{
+  "extends": "../../../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "./",
+    "outDir": "../../dist/main",
+    "composite": true,
+    "tsBuildInfoFile": "../../.tsbuildinfo/main.tsbuildinfo",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "lib": ["ES2023"],
+    "types": ["node"]
+  },
+  "include": ["./*.ts"],
+  "exclude": ["node_modules"],
+  "references": [
+    { "path": "../../../../packages/contracts" },
+    { "path": "../../../../packages/modules" },
+    { "path": "../../../../packages/platform" }
+  ]
+}

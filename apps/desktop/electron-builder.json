@@ -1,0 +1,31 @@
+{
+  "$schema": "https://raw.githubusercontent.com/electron-userland/electron-builder/master/packages/app-builder-lib/scheme.json",
+  "appId": "app.designwan.desktop",
+  "productName": "DesignWan",
+  "copyright": "Copyright © DesignWan",
+  "directories": {
+    "output": "release",
+    "buildResources": "buildResources"
+  },
+  "files": ["dist/main/**/*", "dist/preload/**/*", "dist/renderer/**/*", "package.json"],
+  "asar": true,
+  "asarUnpack": [],
+  "mac": {
+    "category": "public.app-category.productivity",
+    "target": [{ "target": "dmg", "arch": ["arm64", "x64"] }],
+    "hardenedRuntime": true,
+    "gatekeeperAssess": false,
+    "entitlements": "buildResources/entitlements.mac.plist",
+    "entitlementsInherit": "buildResources/entitlements.mac.plist"
+  },
+  "win": {
+    "target": [{ "target": "nsis", "arch": ["x64"] }],
+    "signingHashAlgorithms": ["sha256"]
+  },
+  "nsis": {
+    "oneClick": false,
+    "perMachine": false,
+    "allowToChangeInstallationDirectory": true
+  },
+  "publish": null
+}

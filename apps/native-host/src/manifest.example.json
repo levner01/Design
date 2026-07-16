@@ -1,0 +1,7 @@
+{
+  "name": "app.designwan.native_host",
+  "description": "DesignWan Native Messaging Host",
+  "path": "/absolute/path/to/designwan-native-host",
+  "type": "stdio",
+  "allowed_origins": ["chrome-extension://PLACEHOLDER_EXTENSION_ID/"]
+}
