@@ -29,7 +29,7 @@ const root = fileURLToPath(new URL('../../', import.meta.url));
 
 const MAIN = join(root, 'apps/desktop/src/main/index.ts');
 const PRELOAD = join(root, 'apps/desktop/src/preload/index.ts');
-const RENDERER = join(root, 'apps/desktop/src/renderer/renderer.ts');
+const RENDERER = join(root, 'apps/desktop/src/renderer/renderer.tsx');
 const HTML = join(root, 'apps/desktop/src/renderer/index.html');
 
 async function read(p) {

@@ -23,32 +23,51 @@ function log(msg: string): void {
 
 /**
  * 读取一条 Native Messaging 消息（4 字节长度 + JSON payload）。
+ * 返回值：
+ *   { closed: true } — stdin 关闭，调用方应退出
+ *   { closed: false, msg: undefined } — 畸形消息，已跳过，调用方应继续
+ *   { closed: false, msg: unknown } — 有效消息
  */
-async function readMessage(): Promise<unknown | null> {
+async function readMessage(): Promise<{
+  closed: boolean;
+  msg?: unknown;
+}> {
   const header = await readExact(4);
-  if (header === null) return null;
+  if (header === null) return { closed: true };
   const length = header.readUInt32LE(0);
   if (length <= 0 || length > 1_000_000) {
     log(`invalid message length: ${length}`);
-    return null;
+    return { closed: false };
   }
   const body = await readExact(length);
-  if (body === null) return null;
+  if (body === null) return { closed: true };
   try {
-    return JSON.parse(body.toString('utf8'));
+    return { closed: false, msg: JSON.parse(body.toString('utf8')) };
   } catch (e) {
     log(`invalid json: ${(e as Error).message}`);
-    return null;
+    return { closed: false };
   }
 }
 
+// 持久缓冲区：跨 readExact 调用保留已读取但未消费的数据。
+// 修复单 chunk 包含 header+body 时 body 被丢弃的 bug。
+let readBuffer = Buffer.alloc(0);
+
 function readExact(n: number): Promise<Buffer | null> {
   return new Promise((resolve) => {
-    let acc = Buffer.alloc(0);
+    // 如果缓冲区已有足够数据，直接返回
+    if (readBuffer.length >= n) {
+      const exact = readBuffer.subarray(0, n);
+      readBuffer = readBuffer.subarray(n);
+      resolve(exact);
+      return;
+    }
+
     const onChunk = (chunk: Buffer) => {
-      acc = Buffer.concat([acc, chunk]);
-      if (acc.length >= n) {
-        const exact = acc.subarray(0, n);
+      readBuffer = Buffer.concat([readBuffer, chunk]);
+      if (readBuffer.length >= n) {
+        const exact = readBuffer.subarray(0, n);
+        readBuffer = readBuffer.subarray(n);
         stdin.removeListener('data', onChunk);
         stdin.removeListener('end', onEnd);
         resolve(exact);
@@ -78,10 +97,14 @@ async function main(): Promise<void> {
   log(`starting host protocol=${PROTOCOL_VERSION} app=${APP_VERSION}`);
 
   while (true) {
-    const msg = await readMessage();
-    if (msg === null) {
+    const result = await readMessage();
+    if (result.closed) {
       log('stdin closed, exiting');
       break;
+    }
+    if (result.msg === undefined) {
+      // 畸形消息已跳过，继续读取下一条
+      continue;
     }
     // M0-01 骨架：仅 echo hello；真实握手由 GLM-M1-01 实现
     writeMessage({

@@ -37,8 +37,13 @@ jobs:
           version: 11
           run_install: false
 
-      - name: Install dependencies
+      - name: Install dependencies (Node 24 cold install)
         run: corepack pnpm install --frozen-lockfile
+
+      - name: Verify Electron binary
+        run: |
+          corepack pnpm --filter @designwan/desktop exec electron --version
+        shell: bash
 
       - name: Typecheck
         run: corepack pnpm exec tsc -b
@@ -46,11 +51,14 @@ jobs:
       - name: Build
         run: corepack pnpm build
 
-      - name: verify:quick
+      - name: verify:quick (with Electron smoke)
         run: corepack pnpm verify:quick
+        env:
+          # macOS CI 有显示器；Windows CI 也有
+          DISABLE_ELECTRON_SMOKE: '0'
 
-  desktop-smoke:
-    name: desktop smoke (${{ matrix.os }})
+  desktop-artifacts:
+    name: desktop artifact (${{ matrix.os }}-${{ matrix.arch }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -59,6 +67,9 @@ jobs:
           - os: macos-latest
             target: mac
             arch: arm64
+          - os: macos-13
+            target: mac
+            arch: x64
           - os: windows-latest
             target: win
             arch: x64
@@ -73,14 +84,21 @@ jobs:
           version: 11
           run_install: false
       - run: corepack pnpm install --frozen-lockfile
-      - name: Build desktop
+      - name: Build desktop (tsc + esbuild)
         run: corepack pnpm --filter @designwan/desktop build
+      - name: Verify Electron runs
+        run: corepack pnpm --filter @designwan/desktop exec electron --version
+        shell: bash
       - name: Package smoke (${{ matrix.target }}-${{ matrix.arch }})
         run: corepack pnpm --filter @designwan/desktop exec electron-builder --${{ matrix.target }} --${{ matrix.arch }} --publish never
         env:
           GH_TOKEN: ''
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
-      - name: Upload artifact
+      - name: List artifacts
+        run: |
+          ls -la apps/desktop/release/ || true
+        shell: bash
+      - name: Upload artifact (${{ matrix.target }}-${{ matrix.arch }})
         if: always()
         uses: actions/upload-artifact@v4
         with:

@@ -35,8 +35,8 @@ function createWindow(): BrowserWindow {
       nodeIntegrationInWorker: false,
       nodeIntegrationInSubFrames: false,
       webviewTag: false,
-      // Preload 路径：与 main 编译产物同级
-      preload: path.join(import.meta.dirname, '..', 'preload', 'index.js'),
+      // Preload 路径：sandbox 模式必须用 CJS（.cjs），不能用 ESM import
+      preload: path.join(import.meta.dirname, '..', 'preload', 'index.cjs'),
     },
   });
 
@@ -68,7 +68,7 @@ function createWindow(): BrowserWindow {
     void win.loadURL('http://localhost:5173');
     win.webContents.openDevTools({ mode: 'detach' });
   } else {
-    void win.loadFile(path.join(import.meta.dirname, '..', '..', 'renderer', 'index.html'));
+    void win.loadFile(path.join(import.meta.dirname, '..', 'renderer', 'index.html'));
   }
 
   win.once('ready-to-show', () => win.show());

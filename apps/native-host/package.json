@@ -12,7 +12,7 @@
     "build": "tsc -b",
     "lint": "tsc --noEmit -p tsconfig.json",
     "start": "node dist/index.js",
-    "test": "echo 'no native-host tests yet (M0-01 skeleton)' && exit 0",
+    "test": "node --test scripts/native-host.test.mjs",
     "clean": "rimraf dist *.tsbuildinfo"
   },
   "dependencies": {
