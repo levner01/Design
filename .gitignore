@@ -1,0 +1,102 @@
+# DesignWan — Local-first monorepo
+# 本仓库不保存任何密钥、本地数据库、Vault、用户数据和构建产物。
+
+# 系统垃圾
+.DS_Store
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# 依赖与缓存
+node_modules/
+.pnpm-store/
+.pnpm-cache/
+.yarn/
+.yarnrc.yml
+*.tsbuildinfo
+.turbo/
+.cache/
+.eslintcache
+.parcel-cache/
+
+# 构建产物
+dist/
+build/
+out/
+release/
+*.app
+*.dmg
+*.exe
+*.msi
+*.AppImage
+*.deb
+*.rpm
+*.snap
+apps/*/dist/
+apps/*/build/
+apps/*/out/
+packages/*/dist/
+packages/*/build/
+packages/*/out/
+
+# 测试与覆盖率
+coverage/
+.nyc_output/
+*.lcov
+test-results/
+playwright-report/
+playwright/.cache/
+
+# 环境变量与密钥
+.env
+.env.*
+!.env.example
+.env.local
+.env.*.local
+*.pem
+*.key
+*.p12
+*.pfx
+*.keystore
+secrets/
+credentials.json
+service-account-*.json
+
+# 本地数据库、Vault、日志和用户业务数据（绝不进入仓库）
+*.sqlite
+*.sqlite3
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+designwan.sqlite*
+app-data/
+vault/
+backups/
+vector/
+*.log
+logs/
+
+# Electron 打包与签名
+release-builds/
+signing/
+*.cert
+*.cert.p12
+entitlements.*.plist
+*.provisionprofile
+
+# IDE 与编辑器
+.idea/
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+!.vscode/launch.json
+!.vscode/tasks.json
+*.swp
+*.swo
+*~
+
+# 安全扫描与本地报告
+.security/
+scan-results/
+.dns-link/
