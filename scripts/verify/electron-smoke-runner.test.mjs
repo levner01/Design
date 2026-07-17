@@ -29,7 +29,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, rmSync, mkdtempSync, writeFileSync, copyFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, dirname } from 'node:path';
+import { join, dirname, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -76,6 +76,7 @@ function runSmoke(args = [], env = {}, timeoutMs = 120000) {
     stdout: result.stdout?.toString() || '',
     stderr: result.stderr?.toString() || '',
     timedOut,
+    spawnError: result.error,
   };
 }
 
@@ -133,7 +134,12 @@ function restore(...backups) {
  * 精确断言 smoke 失败：exit 1、未超时、stdout 含失败原因关键词。
  * 拒绝 status === null（超时/信号）被误判为"非零即通过"。
  */
-function assertSmokeFailure(r, reasonKeywords, context) {
+function assertSmokeFailure(r, reasonCode, context) {
+  assert.equal(
+    r.spawnError,
+    undefined,
+    `smoke runner spawnSync must not fail, context: ${context}: ${r.spawnError?.message || ''}`,
+  );
   assert.ok(
     !r.timedOut,
     `smoke should NOT time out (spawnSync timeout), context: ${context}\nstdout:\n${r.stdout.slice(-800)}`,
@@ -143,12 +149,37 @@ function assertSmokeFailure(r, reasonKeywords, context) {
     1,
     `expected exit 1 (precise), got code=${r.code} (null=timeout/signal), context: ${context}\nstdout:\n${r.stdout.slice(-800)}`,
   );
-  assert.match(r.stdout, /FAIL/);
-  if (reasonKeywords) {
-    assert.ok(
-      reasonKeywords.test(r.stdout),
-      `expected failure reason ${reasonKeywords} in stdout, context: ${context}\nstdout:\n${r.stdout.slice(-800)}`,
-    );
+  assert.match(r.stdout, new RegExp(`REASON_CODE: ${reasonCode}(?:\\n|\\r|$)`));
+  assert.match(r.stdout, /electron-packaged-ready-smoke: FAIL/);
+}
+
+function assertSmokeSuccess(r, context) {
+  assert.equal(r.spawnError, undefined, `spawnSync error, context: ${context}`);
+  assert.ok(!r.timedOut, `smoke should not time out, context: ${context}`);
+  assert.equal(
+    r.code,
+    0,
+    `expected exit 0, context: ${context}\nstdout:\n${r.stdout.slice(-800)}\nstderr:\n${r.stderr.slice(-400)}`,
+  );
+  assert.match(r.stdout, /electron-packaged-ready-smoke: PASS/);
+}
+
+/** Prove an injected failure fixture did not poison the next runner invocation. */
+function assertRunnerRecovered(context) {
+  const fake = createFakeExe(`
+    const fs = require('fs');
+    fs.writeFileSync(process.env.DESIGNWAN_SMOKE_SENTINEL, JSON.stringify({
+      ok: true,
+      readyState: 'complete',
+      hasBridge: true,
+      negotiate: { result: { ok: true, value: { protocol: '0.1.0', app: '0.0.0' } } }
+    }), { flag: 'wx' });
+    setTimeout(() => {}, 10000);
+  `);
+  try {
+    assertSmokeSuccess(runSmokeTestMode(fake), `${context}: recovery`);
+  } finally {
+    rmSync(fake.tmpDir, { force: true, recursive: true });
   }
 }
 
@@ -164,6 +195,21 @@ test('prerequisite: packaged app exists', { timeout: 120000 }, () => {
   assert.ok(existsSync(exe), `packaged exe not found: ${exe}`);
 });
 
+test(
+  'RUNNER: repo-relative --artifact path launches exact packaged app',
+  { timeout: 120000 },
+  () => {
+    const exe = findPackagedExe();
+    assert.ok(exe, 'packaged app prerequisite must exist');
+    const repoRelativeArtifact = relative(root, exe);
+    assert.ok(!repoRelativeArtifact.startsWith('..'), `artifact must be under repo: ${exe}`);
+    assertSmokeSuccess(
+      runSmoke(['--no-repackage', `--artifact=${repoRelativeArtifact}`]),
+      'repo-relative --artifact',
+    );
+  },
+);
+
 // ── 测试模式注入接口测试（跨平台 Fixture）──────────────────
 
 // 1. 立即 exit 0 → Smoke exit 1（early exit，sentinel 未收到）
@@ -171,10 +217,11 @@ test('RUNNER: immediate exit 0 → smoke exit 1 + early exit evidence', { timeou
   const fake = createFakeExe('process.exit(0);');
   try {
     const r = runSmokeTestMode(fake);
-    assertSmokeFailure(r, /early exit|sentinel file received.*false|FAIL/i, 'immediate exit 0');
+    assertSmokeFailure(r, 'ELECTRON_SMOKE_EARLY_EXIT', 'immediate exit 0');
   } finally {
     rmSync(fake.tmpDir, { force: true, recursive: true });
   }
+  assertRunnerRecovered('immediate exit 0');
 });
 
 // 2. 立即 exit 1 → Smoke exit 1（early exit，sentinel 未收到）
@@ -182,22 +229,23 @@ test('RUNNER: immediate exit 1 → smoke exit 1 + early exit evidence', { timeou
   const fake = createFakeExe('process.exit(1);');
   try {
     const r = runSmokeTestMode(fake);
-    assertSmokeFailure(r, /early exit|sentinel file received.*false|FAIL/i, 'immediate exit 1');
+    assertSmokeFailure(r, 'ELECTRON_SMOKE_EARLY_EXIT', 'immediate exit 1');
   } finally {
     rmSync(fake.tmpDir, { force: true, recursive: true });
   }
+  assertRunnerRecovered('immediate exit 1');
 });
 
 // 3. sleep 30 不写 sentinel → Smoke exit 1（timeout，sentinel 未收到）
 test('RUNNER: ready timeout → smoke exit 1 + timeout evidence', { timeout: 60000 }, () => {
-  const fake = createFakeExe('setTimeout(() => {}, 30000);');
+  const fake = createFakeExe('setTimeout(() => {}, 60000);');
   try {
-    const r = runSmokeTestMode(fake);
-    // 注意：这里 smoke 内部 30s timeout，spawnSync 给 60s
-    assertSmokeFailure(r, /timeout|sentinel file received.*false|FAIL/i, 'ready timeout');
+    const r = runSmokeTestMode(fake, { DESIGNWAN_SMOKE_TEST_TIMEOUT_MS: '500' });
+    assertSmokeFailure(r, 'ELECTRON_SMOKE_TIMEOUT', 'ready timeout');
   } finally {
     rmSync(fake.tmpDir, { force: true, recursive: true });
   }
+  assertRunnerRecovered('ready timeout');
 });
 
 // 4. 写损坏 JSON 到 sentinel → Smoke exit 1（sentinel parse fail）
@@ -217,14 +265,11 @@ test('RUNNER: sentinel corrupted → smoke exit 1 + sentinel evidence', { timeou
     const r = runSmokeTestMode(fake);
     // sentinel 写了但 JSON 损坏 → smoke 轮询时 JSON.parse 失败，最终 timeout 或 sentinel 未收到
     // 或者 App 退出后 sentinel 是损坏的
-    assertSmokeFailure(
-      r,
-      /sentinel file received.*false|early exit|timeout|FAIL/i,
-      'sentinel corrupted',
-    );
+    assertSmokeFailure(r, 'ELECTRON_SMOKE_SENTINEL_CORRUPT', 'sentinel corrupted');
   } finally {
     rmSync(fake.tmpDir, { force: true, recursive: true });
   }
+  assertRunnerRecovered('sentinel corrupted');
 });
 
 // ── 真实 Packaged App 测试（需要 Electron + 重新打包）──────────
@@ -234,16 +279,8 @@ test('RUNNER: negotiate failure → smoke exit 1 + negotiate evidence', { timeou
   const r = runSmoke(['--no-repackage'], {
     DESIGNWAN_TEST_NEGOTIATE_FAIL: '1',
   });
-  assertSmokeFailure(
-    r,
-    /negotiate\.result\.ok.*false|negotiate.*ok.*false|FAIL/i,
-    'negotiate failure',
-  );
-  // 额外证明：失败原因来自 negotiate，不是 early exit 或 timeout
-  assert.ok(
-    !/early exit.*true/i.test(r.stdout),
-    `negotiate failure should not be early exit, got:\n${r.stdout.slice(-800)}`,
-  );
+  assertSmokeFailure(r, 'ELECTRON_SMOKE_NEGOTIATE_FAILED', 'negotiate failure');
+  assertSmokeSuccess(runSmoke(['--no-repackage']), 'negotiate failure: restored normal smoke');
 });
 
 // 6. HTML 缺失 → exit 1（重新打包包含错误产物）
@@ -253,9 +290,10 @@ test('RUNNER: renderer HTML missing → smoke exit 1', { timeout: 120000 }, () =
   try {
     rmSync(htmlPath, { force: true });
     const r = runSmoke(); // 重新打包包含错误产物
-    assertSmokeFailure(r, /FAIL/i, 'renderer HTML missing');
+    assertSmokeFailure(r, 'ELECTRON_SMOKE_RENDERER_LOAD_FAILED', 'renderer HTML missing');
   } finally {
     restore(b);
+    assertSmokeSuccess(runSmoke(), 'renderer HTML missing: restored normal smoke');
   }
 });
 
@@ -266,20 +304,15 @@ test('RUNNER: preload missing → smoke exit 1', { timeout: 120000 }, () => {
   try {
     rmSync(cjsPath, { force: true });
     const r = runSmoke(); // 重新打包包含错误产物
-    assertSmokeFailure(r, /FAIL/i, 'preload missing');
+    assertSmokeFailure(r, 'ELECTRON_SMOKE_PRELOAD_MISSING', 'preload missing');
   } finally {
     restore(b);
+    assertSmokeSuccess(runSmoke(), 'preload missing: restored normal smoke');
   }
 });
 
 // 8. 正常 Packaged App → exit 0（恢复后证明正常）
 test('RUNNER: normal packaged app → smoke exit 0', { timeout: 120000 }, () => {
   const r = runSmoke();
-  assert.ok(!r.timedOut, `smoke should not time out for normal app`);
-  assert.equal(
-    r.code,
-    0,
-    `smoke should exit 0 for normal packaged app, got ${r.code}\nstdout:\n${r.stdout.slice(-800)}`,
-  );
-  assert.match(r.stdout, /PASS/);
+  assertSmokeSuccess(r, 'normal packaged app');
 });

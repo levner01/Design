@@ -46,10 +46,11 @@ function runSmoke(extDist, timeoutMs = 90000) {
   return runSmokeWithChrome(extDist, null, timeoutMs);
 }
 
-function runSmokeWithChrome(extDist, chromeBin, timeoutMs = 90000) {
+function runSmokeWithChrome(extDist, chromeBin, timeoutMs = 90000, fixtureScript = null) {
   return new Promise((resolve) => {
     const env = { ...process.env, DESIGNWAN_EXT_DIST: extDist };
     if (chromeBin) env.DESIGNWAN_CHROME_BIN = chromeBin;
+    if (fixtureScript) env.DESIGNWAN_CHROME_FIXTURE_SCRIPT = fixtureScript;
     const child = spawn(process.execPath, [smokeScript], {
       stdio: ['pipe', 'pipe', 'pipe'],
       env,
@@ -71,6 +72,10 @@ function runSmokeWithChrome(extDist, chromeBin, timeoutMs = 90000) {
         // ignore
       }
     }, timeoutMs);
+    child.on('error', (error) => {
+      clearTimeout(timer);
+      resolve({ code: -1, stdout, stderr: `${stderr}\n${error.message}`, timedOut: false });
+    });
     child.on('exit', (code) => {
       clearTimeout(timer);
       resolve({ code: timedOut ? -1 : code, stdout, stderr, timedOut });
@@ -89,12 +94,8 @@ test('popup.js invalid syntax → smoke exit 1 + exception evidence', async () =
       1,
       `expected exit 1, got ${result.code}\nstdout:\n${result.stdout.slice(-800)}`,
     );
-    assert.match(result.stdout, /FAIL/);
-    // 语法错误应被 Runtime.exceptionThrown 或 Log.entryAdded 捕获，或 Ready 缺失
-    assert.ok(
-      /exceptionThrown|entryAdded|not set|FAIL/i.test(result.stdout),
-      `expected exception or ready-missing evidence in stdout`,
-    );
+    assert.match(result.stdout, /\[REASON:POPUP_RUNTIME_ERROR\]/);
+    assert.match(result.stdout, /\[popup\].*(exceptionThrown|entryAdded)/i);
   } finally {
     rmSync(dirname(dist), { force: true, recursive: true });
   }
@@ -111,11 +112,9 @@ test('popup.js missing → smoke exit 1 + load failure evidence', async () => {
       1,
       `expected exit 1, got ${result.code}\nstdout:\n${result.stdout.slice(-800)}`,
     );
-    assert.match(result.stdout, /FAIL/);
-    // popup.js 缺失 → Ready 不会设置，或 Log 报告加载失败
-    assert.ok(
-      /not set|entryAdded|FAIL|Could not load|ERR_FILE_NOT_FOUND/i.test(result.stdout),
-      `expected load-failure or ready-missing evidence`,
+    assert.match(
+      `${result.stdout}\n${result.stderr}`,
+      /\[REASON:DIST_ARTIFACT_MISSING\] popup\.js/,
     );
   } finally {
     rmSync(dirname(dist), { force: true, recursive: true });
@@ -136,9 +135,7 @@ test('popup ready marker missing → smoke exit 1 + ready evidence', async () =>
       1,
       `expected exit 1, got ${result.code}\nstdout:\n${result.stdout.slice(-800)}`,
     );
-    assert.match(result.stdout, /FAIL/);
-    // Ready 标记未设置 → assert popup ready step 为 false
-    assert.match(result.stdout, /__DESIGNWAN_POPUP_READY__.*not set|false/i);
+    assert.match(result.stdout, /\[REASON:POPUP_READY_MISSING\]/);
   } finally {
     rmSync(dirname(dist), { force: true, recursive: true });
   }
@@ -155,9 +152,10 @@ test('background.js missing → smoke exit 1 + no SW target evidence', async () 
       1,
       `expected exit 1, got ${result.code}\nstdout:\n${result.stdout.slice(-800)}`,
     );
-    assert.match(result.stdout, /FAIL/);
-    // 无 DesignWan SW target → smoke 报 no SW target found
-    assert.match(result.stdout, /no SW target found|FAIL/i);
+    assert.match(
+      `${result.stdout}\n${result.stderr}`,
+      /\[REASON:DIST_ARTIFACT_MISSING\] background\.js/,
+    );
   } finally {
     rmSync(dirname(dist), { force: true, recursive: true });
   }
@@ -167,17 +165,16 @@ test('background.js missing → smoke exit 1 + no SW target evidence', async () 
 test('Chrome early exit → smoke exit 1 + Chrome exit evidence', async () => {
   const dist = copyDist();
   const fakeChromeDir = mkdtempSync(join(tmpdir(), 'designwan-fake-chrome-'));
-  const fakeChromePath = join(fakeChromeDir, 'fake-chrome');
-  writeFileSync(fakeChromePath, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+  const fakeChromeScript = join(fakeChromeDir, 'fake-chrome.cjs');
+  writeFileSync(fakeChromeScript, 'process.exit(0);\n');
   try {
-    const result = await runSmokeWithChrome(dist, fakeChromePath);
+    const result = await runSmokeWithChrome(dist, process.execPath, 90000, fakeChromeScript);
     assert.equal(
       result.code,
       1,
       `expected exit 1, got ${result.code}\nstdout:\n${result.stdout.slice(-800)}`,
     );
-    assert.match(result.stdout, /FAIL/);
-    assert.match(result.stdout, /not exited early|CDP version reachable.*false|FAIL/i);
+    assert.match(result.stdout, /\[REASON:CHROME_CDP_UNREACHABLE\]/);
   } finally {
     rmSync(dirname(dist), { force: true, recursive: true });
     rmSync(fakeChromeDir, { force: true, recursive: true });
@@ -200,12 +197,10 @@ test('popup ready + console.error → smoke exit 1 + consoleAPICalled evidence',
       1,
       `expected exit 1, got ${result.code}\nstdout:\n${result.stdout.slice(-800)}`,
     );
-    assert.match(result.stdout, /FAIL/);
-    // 必须断言具体失败原因：console.error 被 Runtime.consoleAPICalled 捕获
-    assert.ok(
-      result.stdout.includes('DESIGNWAN_ACCEPTANCE_INJECTED_POPUP_ERROR') ||
-        /console\.error|consoleAPICalled/i.test(result.stdout),
-      `expected console.error evidence in stdout, got:\n${result.stdout.slice(-800)}`,
+    assert.match(result.stdout, /\[REASON:POPUP_RUNTIME_ERROR\]/);
+    assert.match(
+      result.stdout,
+      /\[popup\] Runtime\.consoleAPICalled\(error\): DESIGNWAN_ACCEPTANCE_INJECTED_POPUP_ERROR/,
     );
   } finally {
     rmSync(dirname(dist), { force: true, recursive: true });
@@ -226,7 +221,7 @@ test('service worker throw → smoke exit 1 + exception evidence', async () => {
     writeFileSync(
       join(dist, 'background.js'),
       existingBg +
-        '\n// Counterexample injection\nsetTimeout(() => {\n  console.error("DESIGNWAN_ACCEPTANCE_INJECTED_SW_ERROR");\n  throw new Error("DESIGNWAN_ACCEPTANCE_INJECTED_SW_ERROR");\n}, 2000);\n',
+        '\n// Counterexample injection\nsetInterval(() => {\n  console.error("DESIGNWAN_ACCEPTANCE_INJECTED_SW_ERROR");\n}, 300);\nsetTimeout(() => {\n  throw new Error("DESIGNWAN_ACCEPTANCE_INJECTED_SW_ERROR");\n}, 2500);\n',
     );
     const result = await runSmoke(dist);
     assert.equal(
@@ -234,13 +229,8 @@ test('service worker throw → smoke exit 1 + exception evidence', async () => {
       1,
       `expected exit 1, got ${result.code}\nstdout:\n${result.stdout.slice(-800)}`,
     );
-    assert.match(result.stdout, /FAIL/);
-    // 必须断言具体失败原因：SW exception 被 Runtime.exceptionThrown / consoleAPICalled / Log 捕获
-    assert.ok(
-      result.stdout.includes('DESIGNWAN_ACCEPTANCE_INJECTED_SW_ERROR') ||
-        /exceptionThrown|consoleAPICalled|entryAdded/i.test(result.stdout),
-      `expected SW exception evidence in stdout, got:\n${result.stdout.slice(-800)}`,
-    );
+    assert.match(result.stdout, /\[REASON:SW_RUNTIME_ERROR\]/);
+    assert.match(result.stdout, /\[sw\].*DESIGNWAN_ACCEPTANCE_INJECTED_SW_ERROR/);
   } finally {
     rmSync(dirname(dist), { force: true, recursive: true });
   }
@@ -255,4 +245,16 @@ test('normal DesignWan extension → smoke exit 0', async () => {
     `expected exit 0, got ${result.code}\nstdout:\n${result.stdout.slice(-800)}`,
   );
   assert.match(result.stdout, /PASS/);
+});
+
+test('Chrome spawn error → controlled reason code', async () => {
+  const dist = copyDist();
+  try {
+    const missingChrome = join(dirname(dist), 'does-not-exist', 'chrome');
+    const result = await runSmokeWithChrome(dist, missingChrome);
+    assert.equal(result.code, 1, `expected exit 1, got ${result.code}`);
+    assert.match(result.stdout, /\[REASON:CHROME_SPAWN_ERROR\]/);
+  } finally {
+    rmSync(dirname(dist), { force: true, recursive: true });
+  }
 });

@@ -55,7 +55,9 @@ function resolveSmokeSentinelPath(): string | null {
   try {
     const stat = lstatSync(resolved);
     if (stat.isSymbolicLink()) {
-      console.error(`[smoke] sentinel path must not be a symlink: ${raw}`);
+      console.error(
+        `[smoke][SENTINEL_SYMLINK_REJECTED] sentinel path must not be a symlink: ${raw}`,
+      );
       return null;
     }
   } catch (e) {

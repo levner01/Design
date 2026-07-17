@@ -104,7 +104,7 @@ function findFreePort() {
 
 async function fetchJson(url) {
   try {
-    const resp = await fetch(url);
+    const resp = await fetch(url, { signal: AbortSignal.timeout(2000) });
     if (!resp.ok) return null;
     return await resp.json();
   } catch {
@@ -306,9 +306,9 @@ class CdpClient {
     const details = [];
     for (const e of bucket.exceptions) {
       const text =
-        e.exceptionDetails?.text ||
-        e.exceptionDetails?.exception?.description ||
-        JSON.stringify(e).slice(0, 200);
+        [e.exceptionDetails?.text, e.exceptionDetails?.exception?.description]
+          .filter(Boolean)
+          .join(' | ') || JSON.stringify(e).slice(0, 200);
       details.push(`Runtime.exceptionThrown: ${text}`);
     }
     for (const e of bucket.consoleErrors) {
@@ -372,12 +372,14 @@ async function main() {
   banner('extension-chrome-smoke (M0-01 R5)');
 
   const deadlineStart = Date.now();
-  const isOverdue = () => Date.now() - deadlineStart > OVERALL_DEADLINE_MS;
+  let overallOverdue = false;
+  const isOverdue = () => overallOverdue || Date.now() - deadlineStart >= OVERALL_DEADLINE_MS;
 
   // DESIGNWAN_CHROME_BIN 供反例测试注入假 Chrome。
   const chromePath = process.env.DESIGNWAN_CHROME_BIN || findChrome();
   if (!chromePath) {
     step('find Chrome/Chromium', false, 'not found on system');
+    console.error('[REASON:CHROME_NOT_FOUND]');
     console.error('\n[FAIL] Chrome/Chromium not found.');
     process.exit(1);
   }
@@ -388,6 +390,7 @@ async function main() {
   for (const f of requiredFiles) {
     if (!existsSync(join(extDist, f))) {
       step(`dist/${f} exists`, false, 'MISSING');
+      console.error(`[REASON:DIST_ARTIFACT_MISSING] ${f}`);
       process.exit(1);
     }
   }
@@ -417,7 +420,10 @@ async function main() {
     chromeArgs.unshift('--headless=new', '--no-sandbox', '--disable-dev-shm-usage');
   }
 
-  const child = spawn(chromePath, chromeArgs, {
+  // 仅供反例测试使用：以 Node 执行跨平台 .cjs fixture，避免伪造 Unix 可执行文件。
+  const fixtureScript = process.env.DESIGNWAN_CHROME_FIXTURE_SCRIPT;
+  const childArgs = fixtureScript ? [fixtureScript] : chromeArgs;
+  const child = spawn(chromePath, childArgs, {
     stdio: ['pipe', 'pipe', 'pipe'],
     env: { ...process.env },
   });
@@ -425,6 +431,7 @@ async function main() {
   let stderr = '';
   let chromeExited = false;
   let chromeExitCode = null;
+  let chromeSpawnError = null;
   child.stderr.on('data', (d) => {
     stderr += d.toString();
   });
@@ -432,363 +439,358 @@ async function main() {
     chromeExited = true;
     chromeExitCode = code;
   });
+  child.on('error', (error) => {
+    chromeSpawnError = error;
+  });
 
   let version = null;
   let targets = null;
-
-  // ── 阶段 1：轮询 CDP 直到拿到 DesignWan SW target ──────────
-  // macOS 上 Chrome 主进程会 fork 子进程后退出，这是正常行为，
-  // 不应判为失败。只有 CDP 不可达才是真正的 Chrome 退出。
-  let designwanExtensionId = null;
-  let swTargetInfo = null;
-  const DEBUG_SW = process.env.DEBUG_SW === '1';
-  let lastTargetCount = -1;
-
-  for (let i = 0; i < 60; i++) {
-    if (isOverdue()) break;
-    await sleep(500);
-    version = await fetchJson(`http://127.0.0.1:${DEBUG_PORT}/json/version`);
-    if (!version) continue;
-    targets = await fetchJson(`http://127.0.0.1:${DEBUG_PORT}/json/list`);
-    if (!targets) continue;
-
-    if (DEBUG_SW && targets.length !== lastTargetCount) {
-      lastTargetCount = targets.length;
-      console.log(`[debug][${i * 0.5}s] targets=${targets.length}`);
-      for (const t of targets) {
-        console.log(`  - ${t.type} ${t.url}`);
-      }
-    }
-
-    // 从 DesignWan service worker target URL 提取 Extension ID。
-    // 必须验证 SW URL 指向 manifest 声明的 background.js，
-    // 否则会误匹配 Chrome 内置扩展（如 Google Hangouts 的 thunk.js）。
-    const swTargets = targets.filter(
-      (t) => t.type === 'service-worker' || t.type === 'service_worker',
-    );
-    for (const t of swTargets) {
-      const url = t.url || '';
-      if (url.endsWith('/background.js')) {
-        const match = url.match(/^chrome-extension:\/\/([a-z]+)\//);
-        if (match) {
-          designwanExtensionId = match[1];
-          swTargetInfo = t;
-          break;
-        }
-      }
-    }
-    if (designwanExtensionId) break;
-  }
-
-  step('CDP version reachable', version !== null, version ? version.Browser || '' : 'no response');
-  // macOS 上 Chrome 主进程退出是正常的 fork 行为，不算提前退出
-  const chromeReallyExited = chromeExited && version === null;
-  step(
-    'Chrome not exited early',
-    !chromeReallyExited,
-    chromeReallyExited
-      ? `exit code=${chromeExitCode}`
-      : chromeExited
-        ? 'main process forked (normal on macOS)'
-        : '',
-  );
-
-  if (!designwanExtensionId || !swTargetInfo) {
-    step('find DesignWan service worker + extract extension ID', false, 'no SW target found');
-    console.log('--- targets at failure ---');
-    if (targets) {
-      for (const t of targets) {
-        console.log(`  - type=${t.type} url=${t.url}`);
-      }
-    } else {
-      console.log('  (no targets fetched)');
-    }
-    if (stderr.trim()) {
-      console.log('--- stderr (first 1000) ---');
-      console.log(stderr.slice(0, 1000));
-    }
-    await cleanupChrome(null, child, DEBUG_PORT, userDataDir);
-    console.log('extension-chrome-smoke: FAIL');
-    process.exit(1);
-  }
-  step('DesignWan extension ID extracted from SW', true, designwanExtensionId);
-
-  // 只接受该 Extension ID 的 Target
-  const ownTargets = (targets || []).filter((t) =>
-    (t.url || '').startsWith(`chrome-extension://${designwanExtensionId}/`),
-  );
-  step('DesignWan extension targets found', ownTargets.length > 0, `${ownTargets.length} targets`);
-
-  // ── 阶段 2：建立 CDP 连接 + Popup 可观测 + SW 附着 ─────────
   let browserClient = null;
   let popupSessionId = null;
   let swSessionId = null;
+  let swAttached = false;
   let popupReady = false;
   let cdpSocketClosed = false;
   let flowError = null;
+  const reasons = new Map();
+  const addReason = (code, detail = '') => {
+    if (!reasons.has(code)) reasons.set(code, detail);
+  };
 
-  try {
-    const browserWsUrl = version.webSocketDebuggerUrl;
-    browserClient = await CdpClient.connect(browserWsUrl);
-
-    // 感知 CDP Socket 提前关闭（§A.3 失败条件之一）
-    browserClient.onClose(() => {
-      cdpSocketClosed = true;
-    });
-
-    // browser-level 只支持 Target/Browser 等 browser 域命令；
-    // Log/Runtime/Page 域必须在具体 target session 上启用。
-    // SW 注册失败等 browser 级 error 通过 stderr 检查 + SW session Log 捕获。
-    await browserClient.send('Target.setDiscoverTargets', { discover: true });
-
-    // ── Popup Target：先建可观测能力，再导航 ──────────────────
-    // 1. 创建 about:blank Target（不加载 popup，确保 attach 前无事件丢失）
-    const createResult = await browserClient.send('Target.createTarget', {
-      url: 'about:blank',
-    });
-    const popupTargetId = createResult.targetId;
-    step('CDP Target.createTarget about:blank', true, popupTargetId);
-
-    // 2. Attach Popup Target
-    const popupAttach = await browserClient.send('Target.attachToTarget', {
-      targetId: popupTargetId,
-      flatten: true,
-    });
-    popupSessionId = popupAttach.sessionId;
-    browserClient._getBucket(popupSessionId).name = 'popup';
-    step('CDP attach popup target', true, popupSessionId);
-
-    // 3. 启用 Page / Runtime / Log（注册事件在 CdpClient._handleEvent 自动处理）
-    await browserClient.send('Page.enable', {}, popupSessionId);
-    await browserClient.send('Runtime.enable', {}, popupSessionId);
-    await browserClient.send('Log.enable', {}, popupSessionId);
-    step('popup session: Page/Runtime/Log enabled', true);
-
-    // ── 附着 DesignWan Service Worker Target ──────────────────
-    // 通过 Target.attachToTarget 附着到 SW，采集 Runtime.exceptionThrown
-    // / consoleAPICalled(error) / Log.entryAdded(error)
-    let swAttached = false;
-    // SW target 可能刚启动，attach 需要重试
-    for (let i = 0; i < 10; i++) {
-      if (isOverdue()) break;
-      try {
-        const swAttach = await browserClient.send(
-          'Target.attachToTarget',
-          { targetId: swTargetInfo.id, flatten: true },
-          undefined,
-          5000,
-        );
-        swSessionId = swAttach.sessionId;
-        browserClient._getBucket(swSessionId).name = 'service-worker';
-        await browserClient.send('Runtime.enable', {}, swSessionId);
-        await browserClient.send('Log.enable', {}, swSessionId);
-        swAttached = true;
-        step('CDP attach DesignWan SW target + Runtime/Log enabled', true, swSessionId);
-        break;
-      } catch (e) {
-        if (i < 9) {
-          await sleep(300);
-        } else {
-          step('CDP attach DesignWan SW target', false, e.message);
-        }
-      }
-    }
-
-    // ── 导航到 Popup URL（可观测能力已就绪）──────────────────
-    const popupUrl = `chrome-extension://${designwanExtensionId}/popup.html`;
+  // Deadline 会主动打断 CDP 与 Chrome，保证 60s 是流程硬上限，而非仅供循环参考。
+  const deadlineTimer = setTimeout(() => {
+    overallOverdue = true;
     try {
-      const navResult = await browserClient.send(
-        'Page.navigate',
-        { url: popupUrl },
-        popupSessionId,
-      );
-      const navError = navResult?.errorText;
+      browserClient?.close();
+    } catch {
+      // cleanupChrome 会继续兜底
+    }
+    try {
+      child.kill('SIGTERM');
+    } catch {
+      // cleanupChrome 会继续兜底
+    }
+  }, OVERALL_DEADLINE_MS);
+  deadlineTimer.unref();
+
+  let designwanExtensionId = null;
+  let swTargetInfo = null;
+  let ok = false;
+  try {
+    try {
+      // ── 阶段 1：轮询 CDP 直到拿到 DesignWan SW target ──────────
+      const DEBUG_SW = process.env.DEBUG_SW === '1';
+      let lastTargetCount = -1;
+      for (let i = 0; i < 60 && !isOverdue(); i++) {
+        await sleep(500);
+        if (chromeSpawnError) break;
+        version = await fetchJson(`http://127.0.0.1:${DEBUG_PORT}/json/version`);
+        if (fixtureScript && chromeExited && !version) break;
+        if (!version) continue;
+        targets = await fetchJson(`http://127.0.0.1:${DEBUG_PORT}/json/list`);
+        if (!targets) continue;
+        if (DEBUG_SW && targets.length !== lastTargetCount) {
+          lastTargetCount = targets.length;
+          console.log(`[debug][${i * 0.5}s] targets=${targets.length}`);
+          for (const t of targets) console.log(`  - ${t.type} ${t.url}`);
+        }
+        for (const t of targets.filter(
+          (target) => target.type === 'service-worker' || target.type === 'service_worker',
+        )) {
+          const match = (t.url || '').match(
+            /^chrome-extension:\/\/([a-z]+)\/background\.js(?:[?#].*)?$/,
+          );
+          if (match) {
+            designwanExtensionId = match[1];
+            swTargetInfo = t;
+            break;
+          }
+        }
+        if (designwanExtensionId) break;
+      }
+
+      const chromeReallyExited = chromeExited && version === null;
       step(
-        'CDP Page.navigate popup.html',
-        !navError,
-        navError ? `errorText=${navError}` : popupUrl,
+        'CDP version reachable',
+        version !== null,
+        version ? version.Browser || '' : 'no response',
       );
-    } catch (e) {
-      step('CDP Page.navigate popup.html', false, e.message);
-      flowError = `Page.navigate failed: ${e.message}`;
-    }
-
-    // ── 轮询 Popup Ready 标记 ──────────────────────────────────
-    // ESM module（type="module"）加载是异步的，需要更长等待
-    const DEBUG_POPUP = process.env.DEBUG_POPUP === '1';
-    const readyDeadline = Date.now() + 20000;
-    while (Date.now() < readyDeadline && !isOverdue()) {
-      await sleep(300);
-      if (cdpSocketClosed) {
-        flowError = 'CDP socket closed during popup ready poll';
-        break;
+      step(
+        'Chrome not exited early',
+        !chromeReallyExited && !chromeSpawnError,
+        chromeSpawnError
+          ? chromeSpawnError.message
+          : chromeReallyExited
+            ? `exit code=${chromeExitCode}`
+            : chromeExited
+              ? 'main process forked (normal on macOS)'
+              : '',
+      );
+      if (chromeSpawnError) addReason('CHROME_SPAWN_ERROR', chromeSpawnError.message);
+      if (isOverdue()) addReason('OVERALL_DEADLINE_EXCEEDED', `${OVERALL_DEADLINE_MS}ms`);
+      if (!version) addReason('CHROME_CDP_UNREACHABLE', 'no /json/version response');
+      if (!designwanExtensionId || !swTargetInfo) {
+        addReason('SW_TARGET_NOT_FOUND', 'DesignWan background.js target absent');
+        step('find DesignWan service worker + extract extension ID', false, 'no SW target found');
       }
-      try {
-        const evalResult = await browserClient.send(
-          'Runtime.evaluate',
-          {
-            expression: 'globalThis.__DESIGNWAN_POPUP_READY__ === true',
-            returnByValue: true,
-          },
-          popupSessionId,
-          5000,
+
+      if (version && designwanExtensionId && swTargetInfo && !isOverdue()) {
+        step('DesignWan extension ID extracted from SW', true, designwanExtensionId);
+        const ownTargets = (targets || []).filter((t) =>
+          (t.url || '').startsWith(`chrome-extension://${designwanExtensionId}/`),
         );
-        if (DEBUG_POPUP) {
-          console.log(`[debug-popup] ready=${evalResult.result?.value}`);
+        step(
+          'DesignWan extension targets found',
+          ownTargets.length > 0,
+          `${ownTargets.length} targets`,
+        );
+        if (ownTargets.length === 0) addReason('OWN_TARGET_MISSING');
+
+        browserClient = await CdpClient.connect(version.webSocketDebuggerUrl);
+
+        browserClient.onClose(() => {
+          cdpSocketClosed = true;
+        });
+
+        await browserClient.send('Target.setDiscoverTargets', { discover: true });
+
+        const createResult = await browserClient.send('Target.createTarget', {
+          url: 'about:blank',
+        });
+        const popupTargetId = createResult.targetId;
+        step('CDP Target.createTarget about:blank', true, popupTargetId);
+
+        const popupAttach = await browserClient.send('Target.attachToTarget', {
+          targetId: popupTargetId,
+          flatten: true,
+        });
+        popupSessionId = popupAttach.sessionId;
+        browserClient._getBucket(popupSessionId).name = 'popup';
+        step('CDP attach popup target', true, popupSessionId);
+
+        await browserClient.send('Page.enable', {}, popupSessionId);
+        await browserClient.send('Runtime.enable', {}, popupSessionId);
+        await browserClient.send('Log.enable', {}, popupSessionId);
+        step('popup session: Page/Runtime/Log enabled', true);
+
+        let lastSwAttachError = null;
+        for (let i = 0; i < 10 && !isOverdue(); i++) {
+          try {
+            const swAttach = await browserClient.send(
+              'Target.attachToTarget',
+              { targetId: swTargetInfo.id, flatten: true },
+              undefined,
+              5000,
+            );
+            const candidateSessionId = swAttach.sessionId;
+            await browserClient.send('Runtime.enable', {}, candidateSessionId);
+            await browserClient.send('Log.enable', {}, candidateSessionId);
+            swSessionId = candidateSessionId;
+            browserClient._getBucket(swSessionId).name = 'service-worker';
+            swAttached = true;
+            step('CDP attach DesignWan SW target + Runtime/Log enabled', true, swSessionId);
+            break;
+          } catch (error) {
+            lastSwAttachError = error;
+            if (i < 9) await sleep(300);
+          }
         }
-        if (evalResult.result?.value === true) {
-          popupReady = true;
-          break;
+        if (!swAttached || !swSessionId) {
+          step(
+            'CDP attach DesignWan SW target + Runtime/Log enabled',
+            false,
+            lastSwAttachError?.message || 'not attached',
+          );
+          addReason(
+            'SW_ATTACH_REQUIRED',
+            lastSwAttachError?.message || 'Runtime/Log enable incomplete',
+          );
         }
-      } catch (e) {
-        if (DEBUG_POPUP) console.log(`[debug-popup] error: ${e.message}`);
-        // 如果 socket 关闭，停止轮询
-        if (cdpSocketClosed) {
-          flowError = `CDP socket closed during ready poll: ${e.message}`;
-          break;
+
+        const popupUrl = `chrome-extension://${designwanExtensionId}/popup.html`;
+        const navResult = await browserClient.send(
+          'Page.navigate',
+          { url: popupUrl },
+          popupSessionId,
+        );
+        const navError = navResult?.errorText;
+        step(
+          'CDP Page.navigate popup.html',
+          !navError,
+          navError ? `errorText=${navError}` : popupUrl,
+        );
+        if (navError) addReason('POPUP_NAVIGATION_FAILED', navError);
+
+        if (!navError) {
+          const DEBUG_POPUP = process.env.DEBUG_POPUP === '1';
+          const readyDeadline = Math.min(Date.now() + 20000, deadlineStart + OVERALL_DEADLINE_MS);
+          while (Date.now() < readyDeadline && !isOverdue()) {
+            await sleep(300);
+            if (cdpSocketClosed) break;
+            try {
+              const evalResult = await browserClient.send(
+                'Runtime.evaluate',
+                {
+                  expression: 'globalThis.__DESIGNWAN_POPUP_READY__ === true',
+                  returnByValue: true,
+                },
+                popupSessionId,
+                5000,
+              );
+              if (DEBUG_POPUP) console.log(`[debug-popup] ready=${evalResult.result?.value}`);
+              if (evalResult.result?.value === true) {
+                popupReady = true;
+                break;
+              }
+            } catch (error) {
+              if (DEBUG_POPUP) console.log(`[debug-popup] error: ${error.message}`);
+              if (cdpSocketClosed) break;
+            }
+          }
+          step('popup __DESIGNWAN_POPUP_READY__ === true', popupReady, popupReady ? '' : 'not set');
+          if (!popupReady) addReason('POPUP_READY_MISSING');
         }
+        if (popupReady && !isOverdue()) await sleep(POST_READY_GRACE_MS);
+        if (swAttached && !isOverdue()) await sleep(2000);
+      }
+    } catch (e) {
+      flowError = `CDP flow error: ${e.message}`;
+      addReason('CDP_FLOW_ERROR', e.message);
+    }
+    if (isOverdue()) addReason('OVERALL_DEADLINE_EXCEEDED', `${OVERALL_DEADLINE_MS}ms`);
+
+    // ── 阶段 3：汇总错误证据 ─────────────────────────────────────
+    const popupSummary = browserClient
+      ? browserClient.summarize(popupSessionId)
+      : { exceptions: 0, consoleErrors: 0, logErrors: 0, details: [] };
+    // 未附着 SW 时必须返回空 bucket；严禁用 sessionId=null 的 browser bucket 冒充。
+    const swSummary =
+      browserClient && swAttached && swSessionId
+        ? browserClient.summarize(swSessionId)
+        : { exceptions: 0, consoleErrors: 0, logErrors: 0, details: [] };
+    const browserSummary = browserClient
+      ? browserClient.summarize(null)
+      : { exceptions: 0, consoleErrors: 0, logErrors: 0, details: [] };
+
+    // browser-level Log 中，只关注与 DesignWan 扩展相关的 error
+    // （Chrome 内置扩展的 Log 不应算作 DesignWan 失败）
+    const designwanBrowserErrors = browserSummary.details.filter(
+      (d) =>
+        /designwan|background\.js|chrome-extension/i.test(d) ||
+        (designwanExtensionId && d.includes(designwanExtensionId)),
+    );
+
+    const popupErrorCount =
+      popupSummary.exceptions + popupSummary.consoleErrors + popupSummary.logErrors;
+    const swErrorCount = swSummary.exceptions + swSummary.consoleErrors + swSummary.logErrors;
+
+    if (!swAttached || !swSessionId) addReason('SW_ATTACH_REQUIRED');
+    if (popupErrorCount > 0) addReason('POPUP_RUNTIME_ERROR');
+    if (swErrorCount > 0) addReason('SW_RUNTIME_ERROR');
+    if (cdpSocketClosed && !overallOverdue) addReason('CDP_SOCKET_CLOSED');
+
+    step(
+      'popup: no Runtime.exceptionThrown',
+      popupSummary.exceptions === 0,
+      popupSummary.exceptions > 0 ? popupSummary.details.join('; ').slice(0, 300) : '',
+    );
+    step(
+      'popup: no console.error',
+      popupSummary.consoleErrors === 0,
+      popupSummary.consoleErrors > 0
+        ? popupSummary.details
+            .filter((d) => d.includes('consoleAPICalled'))
+            .join('; ')
+            .slice(0, 300)
+        : '',
+    );
+    step(
+      'popup: no Log.entryAdded(error)',
+      popupSummary.logErrors === 0,
+      popupSummary.logErrors > 0
+        ? popupSummary.details
+            .filter((d) => d.includes('entryAdded'))
+            .join('; ')
+            .slice(0, 300)
+        : '',
+    );
+    step(
+      'SW: no Runtime.exceptionThrown',
+      swSummary.exceptions === 0,
+      swSummary.exceptions > 0 ? swSummary.details.join('; ').slice(0, 300) : '',
+    );
+    step(
+      'SW: no console.error',
+      swSummary.consoleErrors === 0,
+      swSummary.consoleErrors > 0
+        ? swSummary.details
+            .filter((d) => d.includes('consoleAPICalled'))
+            .join('; ')
+            .slice(0, 300)
+        : '',
+    );
+    step(
+      'SW: no Log.entryAdded(error)',
+      swSummary.logErrors === 0,
+      swSummary.logErrors > 0
+        ? swSummary.details
+            .filter((d) => d.includes('entryAdded'))
+            .join('; ')
+            .slice(0, 300)
+        : '',
+    );
+    step(
+      'browser: no DesignWan-related Log.error',
+      designwanBrowserErrors.length === 0,
+      designwanBrowserErrors.length > 0 ? designwanBrowserErrors.join('; ').slice(0, 300) : '',
+    );
+    step('CDP socket not closed early', !cdpSocketClosed, cdpSocketClosed ? 'socket closed' : '');
+
+    // 检查 stderr 致命错误
+    const fatalErrors = [
+      'Manifest is not valid',
+      'Service worker registration failed',
+      'Content Security Policy',
+      'Could not load',
+      'ERR_FILE_NOT_FOUND',
+    ];
+    const foundFatal = fatalErrors.filter((e) => stderr.includes(e));
+    if (foundFatal.length > 0) addReason('CHROME_STDERR_FATAL', foundFatal.join(','));
+    step('no fatal errors in stderr', foundFatal.length === 0, foundFatal.join(', ') || '');
+
+    // 打印 error 详情，便于反例测试断言具体失败原因
+    const allDetails = [
+      ...popupSummary.details.map((d) => `[popup] ${d}`),
+      ...swSummary.details.map((d) => `[sw] ${d}`),
+      ...designwanBrowserErrors.map((d) => `[browser] ${d}`),
+    ];
+    if (allDetails.length > 0) {
+      console.log('--- collected error evidence ---');
+      for (const d of allDetails) {
+        console.log(d);
       }
     }
 
-    step('popup __DESIGNWAN_POPUP_READY__ === true', popupReady, popupReady ? '' : 'not set');
-
-    // ── Ready 后额外等待，收集后续 console.error 等事件 ────────
-    // 第五轮 §A.4 反例：Popup Ready 后 console.error 必须 exit 1。
-    // Ready 标记设置后紧接着的 console.error 可能尚未通过 CDP 事件到达，
-    // 需要 grace period 确保 Runtime.consoleAPICalled 被采集。
-    if (popupReady) {
-      await sleep(POST_READY_GRACE_MS);
-    }
-
-    // SW 附着后也等待一段时间，收集 SW 启动后的异常和 error log
-    if (swAttached) {
-      // SW 的事件可能在 attach 后陆续到达，等 2s 确保采集延迟 throw 等异步异常
-      await sleep(2000);
-    }
-  } catch (e) {
-    flowError = `CDP flow error: ${e.message}`;
+    // 在 cleanupChrome 之前计算 ok，因为 Browser.close 会触发 onClose 设置 cdpSocketClosed=true
+    ok =
+      version !== null &&
+      designwanExtensionId !== null &&
+      swAttached &&
+      swSessionId !== null &&
+      popupReady &&
+      popupErrorCount === 0 &&
+      swErrorCount === 0 &&
+      designwanBrowserErrors.length === 0 &&
+      !cdpSocketClosed &&
+      foundFatal.length === 0 &&
+      !flowError &&
+      !overallOverdue &&
+      reasons.size === 0;
+  } finally {
+    clearTimeout(deadlineTimer);
+    // 所有已启动 Chrome 的路径都统一走外层 finally；Browser.close 仍为第一清理动作。
+    await cleanupChrome(browserClient, child, DEBUG_PORT, userDataDir);
   }
-
-  // ── 阶段 3：汇总错误证据 ─────────────────────────────────────
-  const popupSummary = browserClient
-    ? browserClient.summarize(popupSessionId)
-    : { exceptions: 0, consoleErrors: 0, logErrors: 0, details: [] };
-  const swSummary = browserClient
-    ? browserClient.summarize(swSessionId)
-    : { exceptions: 0, consoleErrors: 0, logErrors: 0, details: [] };
-  const browserSummary = browserClient
-    ? browserClient.summarize(null)
-    : { exceptions: 0, consoleErrors: 0, logErrors: 0, details: [] };
-
-  // browser-level Log 中，只关注与 DesignWan 扩展相关的 error
-  // （Chrome 内置扩展的 Log 不应算作 DesignWan 失败）
-  const designwanBrowserErrors = browserSummary.details.filter(
-    (d) =>
-      /designwan|background\.js|chrome-extension/i.test(d) ||
-      (designwanExtensionId && d.includes(designwanExtensionId)),
-  );
-
-  const popupErrorCount =
-    popupSummary.exceptions + popupSummary.consoleErrors + popupSummary.logErrors;
-  const swErrorCount = swSummary.exceptions + swSummary.consoleErrors + swSummary.logErrors;
-
-  step(
-    'popup: no Runtime.exceptionThrown',
-    popupSummary.exceptions === 0,
-    popupSummary.exceptions > 0 ? popupSummary.details.join('; ').slice(0, 300) : '',
-  );
-  step(
-    'popup: no console.error',
-    popupSummary.consoleErrors === 0,
-    popupSummary.consoleErrors > 0
-      ? popupSummary.details
-          .filter((d) => d.includes('consoleAPICalled'))
-          .join('; ')
-          .slice(0, 300)
-      : '',
-  );
-  step(
-    'popup: no Log.entryAdded(error)',
-    popupSummary.logErrors === 0,
-    popupSummary.logErrors > 0
-      ? popupSummary.details
-          .filter((d) => d.includes('entryAdded'))
-          .join('; ')
-          .slice(0, 300)
-      : '',
-  );
-  step(
-    'SW: no Runtime.exceptionThrown',
-    swSummary.exceptions === 0,
-    swSummary.exceptions > 0 ? swSummary.details.join('; ').slice(0, 300) : '',
-  );
-  step(
-    'SW: no console.error',
-    swSummary.consoleErrors === 0,
-    swSummary.consoleErrors > 0
-      ? swSummary.details
-          .filter((d) => d.includes('consoleAPICalled'))
-          .join('; ')
-          .slice(0, 300)
-      : '',
-  );
-  step(
-    'SW: no Log.entryAdded(error)',
-    swSummary.logErrors === 0,
-    swSummary.logErrors > 0
-      ? swSummary.details
-          .filter((d) => d.includes('entryAdded'))
-          .join('; ')
-          .slice(0, 300)
-      : '',
-  );
-  step(
-    'browser: no DesignWan-related Log.error',
-    designwanBrowserErrors.length === 0,
-    designwanBrowserErrors.length > 0 ? designwanBrowserErrors.join('; ').slice(0, 300) : '',
-  );
-  step('CDP socket not closed early', !cdpSocketClosed, cdpSocketClosed ? 'socket closed' : '');
-
-  // 检查 stderr 致命错误
-  const fatalErrors = [
-    'Manifest is not valid',
-    'Service worker registration failed',
-    'Content Security Policy',
-    'Could not load',
-    'ERR_FILE_NOT_FOUND',
-  ];
-  const foundFatal = fatalErrors.filter((e) => stderr.includes(e));
-  step('no fatal errors in stderr', foundFatal.length === 0, foundFatal.join(', ') || '');
-
-  // 打印 error 详情，便于反例测试断言具体失败原因
-  const allDetails = [
-    ...popupSummary.details.map((d) => `[popup] ${d}`),
-    ...swSummary.details.map((d) => `[sw] ${d}`),
-    ...designwanBrowserErrors.map((d) => `[browser] ${d}`),
-  ];
-  if (allDetails.length > 0) {
-    console.log('--- collected error evidence ---');
-    for (const d of allDetails) {
-      console.log(d);
-    }
-  }
-
-  // 在 cleanupChrome 之前计算 ok，因为 Browser.close 会触发 onClose 设置 cdpSocketClosed=true
-  const ok =
-    version !== null &&
-    !chromeReallyExited &&
-    designwanExtensionId !== null &&
-    ownTargets.length > 0 &&
-    popupReady &&
-    popupErrorCount === 0 &&
-    swErrorCount === 0 &&
-    designwanBrowserErrors.length === 0 &&
-    !cdpSocketClosed &&
-    foundFatal.length === 0 &&
-    !flowError;
-
-  // ── 阶段 4：清理 ─────────────────────────────────────────────
-  await cleanupChrome(browserClient, child, DEBUG_PORT, userDataDir);
 
   if (stderr.trim()) {
     console.log('stderr (first 500 chars):');
@@ -801,7 +803,10 @@ async function main() {
     console.log('extension-chrome-smoke: PASS');
     process.exit(0);
   } else {
-    if (flowError) console.log(`[FAIL reason] ${flowError}`);
+    if (reasons.size === 0) addReason('UNKNOWN_FAILURE');
+    for (const [code, detail] of reasons) {
+      console.log(`[REASON:${code}]${detail ? ` ${detail}` : ''}`);
+    }
     console.log('extension-chrome-smoke: FAIL');
     process.exit(1);
   }

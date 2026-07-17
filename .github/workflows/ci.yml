@@ -18,13 +18,13 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-latest
+          - os: macos-15
             arch: arm64
             target: mac
             artifact_name: desktop-mac-arm64
             # electron-builder --mac --arm64 输出 mac-arm64/
             artifact_glob: apps/desktop/release/mac-arm64/DesignWan.app/Contents/MacOS/DesignWan
-          - os: macos-13
+          - os: macos-15-intel
             arch: x64
             target: mac
             artifact_name: desktop-mac-x64
@@ -99,15 +99,17 @@ jobs:
         run: |
           set -e
           GLOB="${{ matrix.artifact_glob }}"
+          shopt -s nullglob
           # shellcheck disable=SC2086
-          ARTIFACT=$(ls $GLOB 2>/dev/null | head -1)
-          if [ -z "$ARTIFACT" ]; then
-            echo "ERROR: no artifact found matching $GLOB"
+          MATCHES=( $GLOB )
+          if [ "${#MATCHES[@]}" -ne 1 ]; then
+            echo "ERROR: expected exactly one artifact matching $GLOB, found ${#MATCHES[@]}"
             echo "release/ contents:"
             ls -la apps/desktop/release/ || true
             find apps/desktop/release -type f 2>/dev/null | head -20 || true
             exit 1
           fi
+          ARTIFACT=$(cd "$(dirname "${MATCHES[0]}")" && pwd -P)/$(basename "${MATCHES[0]}")
           echo "path=$ARTIFACT" >> $GITHUB_OUTPUT
           echo "Resolved artifact: $ARTIFACT"
 
@@ -150,13 +152,46 @@ jobs:
           elif [[ "$RUNNER_OS" == "Windows" ]]; then
             FILE_INFO=$(file "$ARTIFACT")
             echo "file info: $FILE_INFO"
-            echo "$FILE_INFO" | grep -qi "PE32\|x86-64\|80386" || { echo "ERROR: not valid Windows PE binary: $FILE_INFO"; exit 1; }
-            echo "✓ Windows PE binary valid"
+            # x64 Electron must be PE32+ and AMD64/x86-64. PE32/80386 is 32-bit
+            # and must never pass the desktop-win-x64 matrix gate.
+            echo "$FILE_INFO" | grep -q "PE32+" || { echo "ERROR: expected PE32+ x64 binary, got: $FILE_INFO"; exit 1; }
+            echo "$FILE_INFO" | grep -Eqi "x86-64|x86_64|AMD64" || { echo "ERROR: expected AMD64/x86-64, got: $FILE_INFO"; exit 1; }
+            if echo "$FILE_INFO" | grep -qi "80386"; then
+              echo "ERROR: rejected 32-bit 80386 binary: $FILE_INFO"
+              exit 1
+            fi
+            echo "✓ Windows PE32+ AMD64 binary valid"
           fi
 
-          # 3. 无其他架构旧产物（release 目录下只有当前架构的目录）
+          # 3. 无其他架构旧产物。electron-builder may create metadata/installers,
+          # but unpacked app directories are restricted to the active matrix target.
           echo "Release directory contents:"
           ls -la apps/desktop/release/
+          UNPACKED_DIRS=( $(find apps/desktop/release -mindepth 1 -maxdepth 1 -type d \( -name 'mac*' -o -name 'win-unpacked' \) -print) )
+          for dir in "${UNPACKED_DIRS[@]}"; do
+            case "$EXPECTED_NAME:$dir" in
+              desktop-mac-arm64:*/mac-arm64|desktop-mac-x64:*/mac|desktop-mac-x64:*/mac-x64|desktop-win-x64:*/win-unpacked) ;;
+              *) echo "ERROR: unexpected unpacked artifact directory for $EXPECTED_NAME: $dir"; exit 1 ;;
+            esac
+          done
+          [ "${#UNPACKED_DIRS[@]}" -eq 1 ] || { echo "ERROR: expected exactly one unpacked artifact directory, found ${#UNPACKED_DIRS[@]}"; exit 1; }
+
+          # Full top-level allowlist: metadata/installers for this target are allowed,
+          # stale files from another architecture make the job fail loudly.
+          for entry in apps/desktop/release/*; do
+            name=$(basename "$entry")
+            if [ -d "$entry" ]; then
+              continue # exact directory allowlist was enforced above
+            fi
+            case "$EXPECTED_NAME:$name" in
+              desktop-mac-arm64:builder-*.yml|desktop-mac-arm64:*-arm64.dmg|desktop-mac-arm64:*-arm64.dmg.blockmap|desktop-mac-arm64:*-arm64.zip|desktop-mac-arm64:*-arm64.zip.blockmap) ;;
+              desktop-mac-x64:builder-*.yml|desktop-mac-x64:*.dmg|desktop-mac-x64:*.dmg.blockmap|desktop-mac-x64:*.zip|desktop-mac-x64:*.zip.blockmap)
+                [[ "$name" != *-arm64* ]] || { echo "ERROR: arm64 file in x64 release: $name"; exit 1; }
+                ;;
+              desktop-win-x64:builder-*.yml|desktop-win-x64:*.exe|desktop-win-x64:*.exe.blockmap|desktop-win-x64:latest.yml) ;;
+              *) echo "ERROR: release entry is not allowed for $EXPECTED_NAME: $name"; exit 1 ;;
+            esac
+          done
           echo "Artifact verification passed: $EXPECTED_NAME ($EXPECTED_ARCH)"
 
       - name: Upload artifact (${{ matrix.artifact_name }})

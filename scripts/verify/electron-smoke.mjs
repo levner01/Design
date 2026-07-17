@@ -31,7 +31,7 @@
 import { spawn, execFileSync } from 'node:child_process';
 import { existsSync, rmSync, mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, dirname } from 'node:path';
+import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { banner, step } from './lib/not-implemented.mjs';
 
@@ -69,7 +69,11 @@ if (isTestMode) {
 
 // ── --artifact：精确指定 packaged artifact 路径（第五次整改 §D）──
 const artifactArg = process.argv.find((a) => a.startsWith('--artifact='));
-const explicitArtifact = artifactArg ? artifactArg.slice('--artifact='.length) : null;
+// CLI paths are repo-relative by contract. Resolve once here so a later cwd change
+// cannot accidentally duplicate a relative path (the R5 CI ENOENT regression).
+const explicitArtifact = artifactArg
+  ? resolve(root, artifactArg.slice('--artifact='.length))
+  : null;
 
 // ── 按 process.arch 选择 unpacked app ─────────────────────
 function findUnpackedApp() {
@@ -204,8 +208,15 @@ async function main() {
   rmSync(sentinelFile, { force: true });
 
   // 5. 启动 packaged app + 立即注册 error/exit/close
-  const SMOKE_TIMEOUT_MS = 30000;
+  const requestedTestTimeout = Number(process.env.DESIGNWAN_SMOKE_TEST_TIMEOUT_MS);
+  const SMOKE_TIMEOUT_MS =
+    isTestMode && Number.isFinite(requestedTestTimeout) && requestedTestTimeout >= 250
+      ? requestedTestTimeout
+      : 30000;
   let stderrOutput = '';
+  let invalidSentinelObserved = false;
+  let recoveredSentinelContent = null;
+  let stopPolling = false;
 
   const child = spawn(spawnTarget, spawnArgs, {
     cwd: spawnCwd,
@@ -233,12 +244,14 @@ async function main() {
   // 6. Promise.race 竞争：sentinel / 提前退出 / spawn error / timeout
   const sentinelPromise = (async () => {
     const pollStart = Date.now();
-    while (Date.now() - pollStart < SMOKE_TIMEOUT_MS) {
+    while (!stopPolling && Date.now() - pollStart < SMOKE_TIMEOUT_MS) {
       if (existsSync(sentinelFile)) {
         try {
           return { kind: 'sentinel', content: JSON.parse(readFileSync(sentinelFile, 'utf8')) };
         } catch {
-          // 文件可能还在写入中，继续轮询
+          // 文件可能还在写入中；记录证据并继续轮询。若进程随后退出，
+          // 该证据会稳定归类为 SENTINEL_CORRUPT，而不是笼统 early exit。
+          invalidSentinelObserved = true;
         }
       }
       await new Promise((r) => setTimeout(r, 100));
@@ -252,6 +265,16 @@ async function main() {
   });
 
   const raceResult = await Promise.race([sentinelPromise, exitPromise, timeoutPromise]);
+  stopPolling = true;
+
+  // 进程可能在轮询器第一次读取前就写坏 sentinel 并退出；同步补采证据。
+  if (raceResult.kind !== 'sentinel' && existsSync(sentinelFile)) {
+    try {
+      recoveredSentinelContent = JSON.parse(readFileSync(sentinelFile, 'utf8'));
+    } catch {
+      invalidSentinelObserved = true;
+    }
+  }
 
   // 7. 收到 sentinel 或超时后，确保子进程退出
   if (raceResult.kind === 'sentinel' || raceResult.kind === 'timeout') {
@@ -278,7 +301,8 @@ async function main() {
   if (timeoutTimer) clearTimeout(timeoutTimer);
 
   // 8. 验证结果
-  const sentinelContent = raceResult.kind === 'sentinel' ? raceResult.content : null;
+  const sentinelContent =
+    raceResult.kind === 'sentinel' ? raceResult.content : recoveredSentinelContent;
   const earlyExit =
     raceResult.kind === 'exit' || raceResult.kind === 'close' || raceResult.kind === 'error';
   const timedOut = raceResult.kind === 'timeout';
@@ -348,14 +372,41 @@ async function main() {
 
   if (ok) {
     console.log('electron-packaged-ready-smoke: PASS');
-    process.exit(0);
+    process.exitCode = 0;
+    return;
   } else {
+    let reasonCode = 'ELECTRON_SMOKE_VALIDATION_FAILED';
+    if (spawnError) {
+      reasonCode = 'ELECTRON_SMOKE_SPAWN_ERROR';
+    } else if (invalidSentinelObserved) {
+      reasonCode = 'ELECTRON_SMOKE_SENTINEL_CORRUPT';
+    } else if (sentinelContent?.negotiate?.result?.ok === false) {
+      reasonCode = 'ELECTRON_SMOKE_NEGOTIATE_FAILED';
+    } else if (
+      sentinelContent?.hasBridge === false ||
+      /preload bridge missing/i.test(sentinelContent?.error || '')
+    ) {
+      reasonCode = 'ELECTRON_SMOKE_PRELOAD_MISSING';
+    } else if (/did-fail-load|ERR_FILE_NOT_FOUND/i.test(sentinelContent?.error || '')) {
+      reasonCode = 'ELECTRON_SMOKE_RENDERER_LOAD_FAILED';
+    } else if (timedOut) {
+      reasonCode = 'ELECTRON_SMOKE_TIMEOUT';
+    } else if (earlyExit) {
+      reasonCode = 'ELECTRON_SMOKE_EARLY_EXIT';
+    } else if (foundFatal.length > 0) {
+      reasonCode = 'ELECTRON_SMOKE_FATAL_STDERR';
+    } else if (sentinelContent?.ok !== true) {
+      reasonCode = 'ELECTRON_SMOKE_SENTINEL_REJECTED';
+    }
+    console.log(`REASON_CODE: ${reasonCode}`);
     console.log('electron-packaged-ready-smoke: FAIL');
-    process.exit(1);
+    process.exitCode = 1;
+    return;
   }
 }
 
 main().catch((e) => {
+  console.log('REASON_CODE: ELECTRON_SMOKE_INTERNAL_ERROR');
   console.error('[smoke] fatal:', e);
-  process.exit(1);
+  process.exitCode = 1;
 });

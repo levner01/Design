@@ -127,27 +127,43 @@ function runElectronAndWait(sentinelPath, env, timeoutMs = 8000, opts = {}) {
     },
   });
 
+  let stderr = '';
+  child.stderr.on('data', (chunk) => {
+    stderr += chunk.toString();
+  });
+
   return new Promise((resolve) => {
     let done = false;
     let checkSentinel = null;
+    let forceKillTimer = null;
     const finish = (result) => {
       if (done) return;
       done = true;
       clearTimeout(timer);
       if (checkSentinel) clearInterval(checkSentinel);
+
+      const resolveAfterClose = (exitCode = child.exitCode, signal = child.signalCode) => {
+        if (forceKillTimer) clearTimeout(forceKillTimer);
+        resolve({ ...result, exitCode, signal, stderr });
+      };
+
+      // 等待 close，确保 stdio 已关闭且旧 Electron 不会污染下一用例。
+      child.once('close', resolveAfterClose);
+      if (child.exitCode !== null || child.signalCode !== null) return;
+
       try {
         child.kill('SIGTERM');
-        setTimeout(() => {
-          try {
-            child.kill('SIGKILL');
-          } catch {
-            // 已退出
-          }
-        }, 2000);
       } catch {
-        // 已退出
+        resolveAfterClose();
+        return;
       }
-      resolve(result);
+      forceKillTimer = setTimeout(() => {
+        try {
+          if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+        } catch {
+          // 已退出
+        }
+      }, 2000);
     };
 
     const timer = setTimeout(() => {
@@ -156,9 +172,13 @@ function runElectronAndWait(sentinelPath, env, timeoutMs = 8000, opts = {}) {
       finish({ timedOut: true, sentinelContent });
     }, timeoutMs);
 
-    child.on('exit', () => {
+    child.on('exit', (exitCode, signal) => {
       const sentinelContent = readSentinelSafe(sentinelPath);
-      finish({ exited: true, sentinelContent });
+      finish({ exited: true, exitCode, signal, sentinelContent });
+    });
+
+    child.on('error', (error) => {
+      finish({ spawnError: error.message, sentinelContent: readSentinelSafe(sentinelPath) });
     });
 
     // 轮询 sentinel（用 readSentinelSafe 防 follow symlink）
@@ -277,6 +297,11 @@ test('INVALID: symlink → non-existent external file → NOT written, symlink p
       result.sentinelContent === null || result.sentinelContent?.ok === false,
       `App should reject symlink sentinel path, got sentinelContent=${JSON.stringify(result.sentinelContent)}`,
     );
+    assert.match(
+      result.stderr,
+      /\[SENTINEL_SYMLINK_REJECTED\]/,
+      `App must emit explicit symlink rejection evidence, stderr=${result.stderr}`,
+    );
   } finally {
     rmSync(symlinkPath, { force: true });
     rmSync(externalFile, { force: true });
@@ -347,6 +372,11 @@ test('INVALID: symlink → existing external file with content → NOT modified,
     assert.ok(
       result.sentinelContent === null || result.sentinelContent?.ok === false,
       `App should reject symlink sentinel path, got sentinelContent=${JSON.stringify(result.sentinelContent)}`,
+    );
+    assert.match(
+      result.stderr,
+      /\[SENTINEL_SYMLINK_REJECTED\]/,
+      `App must emit explicit symlink rejection evidence, stderr=${result.stderr}`,
     );
   } finally {
     rmSync(symlinkPath, { force: true });

@@ -117,7 +117,7 @@ allOk =
 // 11. Extension Chrome 加载 smoke
 allOk =
   (await runStep('extension chrome smoke', 'node', ['scripts/verify/extension-chrome-smoke.mjs'], {
-    timeout: 60000,
+    timeout: 90000,
   })) && allOk;
 
 // 12. Extension 干净构建回归测试（删除 background.ts 后构建必须失败）
@@ -160,7 +160,7 @@ allOk =
     'node',
     ['--test', 'scripts/verify/extension-chrome-smoke-failures.test.mjs'],
     {
-      timeout: 300000,
+      timeout: 900000,
     },
   )) && allOk;
 
