@@ -19,10 +19,11 @@
  *   2. 立即 exit 1 → Smoke exit 1（early exit，sentinel 未收到）
  *   3. sleep 30 不写 sentinel → Smoke exit 1（timeout，sentinel 未收到）
  *   4. 写损坏 JSON 到 sentinel → Smoke exit 1（sentinel parse fail）
- *   5. negotiate 失败 → Smoke exit 1（sentinel.ok=false，negotiate error 证据）
- *   6. HTML 缺失 → exit 1（重新打包包含错误产物）
- *   7. Preload 缺失 → exit 1（重新打包包含错误产物）
- *   8. 正常 Packaged App → exit 0
+ *   5. 分段写入完整 sentinel → Smoke exit 0（短暂半截 JSON 不得误判损坏）
+ *   6. negotiate 失败 → Smoke exit 1（sentinel.ok=false，negotiate error 证据）
+ *   7. HTML 缺失 → exit 1（重新打包包含错误产物）
+ *   8. Preload 缺失 → exit 1（重新打包包含错误产物）
+ *   9. 正常 Packaged App → exit 0
  */
 import { spawnSync } from 'node:child_process';
 import { test } from 'node:test';
@@ -272,9 +273,29 @@ test('RUNNER: sentinel corrupted → smoke exit 1 + sentinel evidence', { timeou
   assertRunnerRecovered('sentinel corrupted');
 });
 
+// 5. Windows 上文件创建和内容落盘并非原子动作；轮询读到半截 JSON 后应继续等待完整内容。
+test('RUNNER: partially written sentinel recovers to success', { timeout: 60000 }, () => {
+  const fake = createFakeExe(`
+    const fs = require('fs');
+    const file = process.env.DESIGNWAN_SMOKE_SENTINEL;
+    const fd = fs.openSync(file, 'wx');
+    fs.writeSync(fd, '{"ok":');
+    setTimeout(() => {
+      fs.writeSync(fd, 'true,"readyState":"complete","hasBridge":true,"negotiate":{"result":{"ok":true,"value":{"protocol":"0.1.0","app":"0.0.0"}}}}');
+      fs.closeSync(fd);
+    }, 300);
+    setTimeout(() => {}, 10000);
+  `);
+  try {
+    assertSmokeSuccess(runSmokeTestMode(fake), 'partially written sentinel');
+  } finally {
+    rmSync(fake.tmpDir, { force: true, recursive: true });
+  }
+});
+
 // ── 真实 Packaged App 测试（需要 Electron + 重新打包）──────────
 
-// 5. negotiate 失败 → Smoke exit 1（证明失败来自 negotiate）
+// 6. negotiate 失败 → Smoke exit 1（证明失败来自 negotiate）
 test('RUNNER: negotiate failure → smoke exit 1 + negotiate evidence', { timeout: 120000 }, () => {
   const r = runSmoke(['--no-repackage'], {
     DESIGNWAN_TEST_NEGOTIATE_FAIL: '1',
@@ -283,7 +304,7 @@ test('RUNNER: negotiate failure → smoke exit 1 + negotiate evidence', { timeou
   assertSmokeSuccess(runSmoke(['--no-repackage']), 'negotiate failure: restored normal smoke');
 });
 
-// 6. HTML 缺失 → exit 1（重新打包包含错误产物）
+// 7. HTML 缺失 → exit 1（重新打包包含错误产物）
 test('RUNNER: renderer HTML missing → smoke exit 1', { timeout: 120000 }, () => {
   const htmlPath = join(desktopDir, 'dist/renderer/index.html');
   const b = backup(htmlPath);
@@ -297,7 +318,7 @@ test('RUNNER: renderer HTML missing → smoke exit 1', { timeout: 120000 }, () =
   }
 });
 
-// 7. Preload 缺失 → exit 1（重新打包包含错误产物）
+// 8. Preload 缺失 → exit 1（重新打包包含错误产物）
 test('RUNNER: preload missing → smoke exit 1', { timeout: 120000 }, () => {
   const cjsPath = join(desktopDir, 'dist/preload/index.cjs');
   const b = backup(cjsPath);
@@ -311,7 +332,7 @@ test('RUNNER: preload missing → smoke exit 1', { timeout: 120000 }, () => {
   }
 });
 
-// 8. 正常 Packaged App → exit 0（恢复后证明正常）
+// 9. 正常 Packaged App → exit 0（恢复后证明正常）
 test('RUNNER: normal packaged app → smoke exit 0', { timeout: 120000 }, () => {
   const r = runSmoke();
   assertSmokeSuccess(r, 'normal packaged app');

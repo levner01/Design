@@ -253,7 +253,11 @@ async function main() {
     while (!stopPolling && Date.now() - pollStart < SMOKE_TIMEOUT_MS) {
       if (existsSync(sentinelFile)) {
         try {
-          return { kind: 'sentinel', content: JSON.parse(readFileSync(sentinelFile, 'utf8')) };
+          const content = JSON.parse(readFileSync(sentinelFile, 'utf8'));
+          // Windows 上写入与轮询可能短暂交错：一次半截 JSON 不能在后续
+          // 完整解析成功后继续被当成“损坏 Sentinel”的最终证据。
+          invalidSentinelObserved = false;
+          return { kind: 'sentinel', content };
         } catch {
           // 文件可能还在写入中；记录证据并继续轮询。若进程随后退出，
           // 该证据会稳定归类为 SENTINEL_CORRUPT，而不是笼统 early exit。
@@ -384,7 +388,7 @@ async function main() {
     let reasonCode = 'ELECTRON_SMOKE_VALIDATION_FAILED';
     if (spawnError) {
       reasonCode = 'ELECTRON_SMOKE_SPAWN_ERROR';
-    } else if (invalidSentinelObserved) {
+    } else if (invalidSentinelObserved && sentinelContent === null) {
       reasonCode = 'ELECTRON_SMOKE_SENTINEL_CORRUPT';
     } else if (sentinelContent?.negotiate?.result?.ok === false) {
       reasonCode = 'ELECTRON_SMOKE_NEGOTIATE_FAILED';
