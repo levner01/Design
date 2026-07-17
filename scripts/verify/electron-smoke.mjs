@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Electron Packaged Artifact Ready Smoke.
+ * Electron Packaged Artifact Ready Smoke。
  *
  * 启动 electron-builder 生成的 Unpacked App（不是 `electron .` 源码目录），
  * 通过 Main 进程的 Sentinel 文件获取正向 Ready 证据：
@@ -16,6 +16,16 @@
  * - 强制重新生成 artifact，不只比较 main/index.js mtime
  * - Sentinel 路径必须在 <tmpdir>/designwan-smoke-* 专用临时目录
  *
+ * 第五次整改 §C：Runner 级负例真实性
+ * - 测试模式注入接口（双开关限制，生产不可用）：
+ *   DESIGNWAN_SMOKE_MODE === '1' + DESIGNWAN_SMOKE_TEST_COMMAND 存在时，
+ *   用注入的 command/args 代替真实 packaged app，跳过打包。
+ *   用于跨平台 Fixture（Node.js 脚本），不用 Unix shell 脚本当 Windows .exe。
+ *
+ * 第五次整改 §D：CI Matrix 与 Artifact 一一对应
+ * - --artifact=<path>：精确指定 packaged artifact 路径，避免选错架构。
+ *   CI 每 Job 清理 release 后只生成目标架构，Smoke 用 --no-repackage --artifact=<path>。
+ *
  * S0 验收模式禁止通过 DISABLE_ELECTRON_SMOKE 跳过。
  */
 import { spawn, execFileSync } from 'node:child_process';
@@ -29,7 +39,7 @@ const root = fileURLToPath(new URL('../../', import.meta.url));
 const desktopDir = join(root, 'apps/desktop');
 const releaseDir = join(desktopDir, 'release');
 
-banner('electron-packaged-ready-smoke (M0-01)');
+banner('electron-packaged-ready-smoke (M0-01 R5)');
 
 // S0 验收模式禁止跳过
 if (process.env.DISABLE_ELECTRON_SMOKE === '1') {
@@ -37,8 +47,42 @@ if (process.env.DISABLE_ELECTRON_SMOKE === '1') {
   process.exit(1);
 }
 
+// ── 测试模式注入接口（第五次整改 §C）─────────────────────
+// 双开关限制：必须同时满足 SMOKE_MODE === '1' 和 TEST_COMMAND 存在
+// 生产环境（SMOKE_MODE !== '1'）完全不受影响，无法被环境变量注入故障
+const testCommand = process.env.DESIGNWAN_SMOKE_TEST_COMMAND;
+const isTestMode = !!testCommand && process.env.DESIGNWAN_SMOKE_MODE === '1';
+let testArgs = [];
+if (isTestMode) {
+  try {
+    testArgs = process.env.DESIGNWAN_SMOKE_TEST_ARGS
+      ? JSON.parse(process.env.DESIGNWAN_SMOKE_TEST_ARGS)
+      : [];
+    if (!Array.isArray(testArgs)) {
+      throw new Error('DESIGNWAN_SMOKE_TEST_ARGS must be a JSON array');
+    }
+  } catch (e) {
+    step('parse DESIGNWAN_SMOKE_TEST_ARGS', false, e.message);
+    process.exit(1);
+  }
+}
+
+// ── --artifact：精确指定 packaged artifact 路径（第五次整改 §D）──
+const artifactArg = process.argv.find((a) => a.startsWith('--artifact='));
+const explicitArtifact = artifactArg ? artifactArg.slice('--artifact='.length) : null;
+
 // ── 按 process.arch 选择 unpacked app ─────────────────────
 function findUnpackedApp() {
+  // 精确指定 artifact 路径（CI Matrix 用，避免选错架构）
+  if (explicitArtifact) {
+    if (!existsSync(explicitArtifact)) {
+      step(`explicit artifact exists`, false, explicitArtifact);
+      return null;
+    }
+    step(`use explicit artifact`, true, explicitArtifact);
+    return { exe: explicitArtifact, appPath: dirname(explicitArtifact), arch: 'explicit' };
+  }
+
   if (process.platform === 'darwin') {
     // arm64 只选 mac-arm64，x64 只选 mac-x64/mac
     const archDirs =
@@ -66,6 +110,16 @@ function findUnpackedApp() {
 const skipRepackage = process.argv.includes('--no-repackage');
 
 function ensurePackaged() {
+  if (explicitArtifact) {
+    // --artifact 已在 findUnpackedApp 中处理
+    const app = findUnpackedApp();
+    if (!app) {
+      step(`find explicit artifact`, false, explicitArtifact);
+      process.exit(1);
+    }
+    return app;
+  }
+
   if (skipRepackage) {
     const existing = findUnpackedApp();
     if (!existing) {
@@ -105,24 +159,44 @@ function ensurePackaged() {
 
 // ── 主流程 ──────────────────────────────────────────────
 async function main() {
-  // 1. 前置检查：electron 二进制
-  const electronBin = join(desktopDir, 'node_modules/.bin/electron');
-  if (!existsSync(electronBin)) {
-    step('electron binary exists', false, 'electron not installed');
-    process.exit(1);
-  }
-  step('electron binary exists', true);
+  let spawnTarget;
+  let spawnCwd;
+  let spawnArgs = [];
 
-  // 2. 前置检查：dist 产物
-  const mainJs = join(desktopDir, 'dist/main/index.js');
-  if (!existsSync(mainJs)) {
-    step('dist/main/index.js exists', false, 'run build first');
-    process.exit(1);
-  }
-  step('dist/main/index.js exists', true);
+  if (isTestMode) {
+    // 测试模式：用注入的 command/args 代替真实 packaged app
+    // 用于 runner 级失败测试（exit 0、exit 1、timeout、sentinel corrupted 等）
+    // 跨平台：用 Node.js 脚本作为 fake exe，不用 Unix shell 脚本
+    step(
+      'test mode: use injected command (SMOKE_MODE required)',
+      true,
+      `${testCommand} ${testArgs.join(' ')}`,
+    );
+    spawnTarget = testCommand;
+    spawnCwd = process.cwd();
+    spawnArgs = testArgs;
+  } else {
+    // 1. 前置检查：electron 二进制
+    const electronBin = join(desktopDir, 'node_modules/.bin/electron');
+    if (!existsSync(electronBin)) {
+      step('electron binary exists', false, 'electron not installed');
+      process.exit(1);
+    }
+    step('electron binary exists', true);
 
-  // 3. 强制重新打包（不复用旧 artifact，避免 stale 假绿）
-  const app = ensurePackaged();
+    // 2. 前置检查：dist 产物
+    const mainJs = join(desktopDir, 'dist/main/index.js');
+    if (!existsSync(mainJs)) {
+      step('dist/main/index.js exists', false, 'run build first');
+      process.exit(1);
+    }
+    step('dist/main/index.js exists', true);
+
+    // 3. 强制重新打包（或用精确 artifact 路径，或用 --no-repackage 跳过）
+    const app = ensurePackaged();
+    spawnTarget = app.exe;
+    spawnCwd = dirname(app.exe);
+  }
 
   // 4. 创建专用临时目录 + sentinel 文件路径（满足 main 的路径安全校验）
   const smokeDir = mkdtempSync(join(tmpdir(), 'designwan-smoke-'));
@@ -133,8 +207,8 @@ async function main() {
   const SMOKE_TIMEOUT_MS = 30000;
   let stderrOutput = '';
 
-  const child = spawn(app.exe, [], {
-    cwd: dirname(app.exe),
+  const child = spawn(spawnTarget, spawnArgs, {
+    cwd: spawnCwd,
     stdio: ['pipe', 'pipe', 'pipe'],
     env: {
       ...process.env,
@@ -207,6 +281,8 @@ async function main() {
   const sentinelContent = raceResult.kind === 'sentinel' ? raceResult.content : null;
   const earlyExit =
     raceResult.kind === 'exit' || raceResult.kind === 'close' || raceResult.kind === 'error';
+  const timedOut = raceResult.kind === 'timeout';
+  const spawnError = raceResult.kind === 'error';
 
   const fatalErrors = [
     'ERR_FILE_NOT_FOUND',
@@ -223,6 +299,8 @@ async function main() {
     !earlyExit,
     earlyExit ? `early ${raceResult.kind}` : '',
   );
+  step('no timeout (sentinel received within deadline)', !timedOut, timedOut ? 'timeout' : '');
+  step('no spawn error', !spawnError, spawnError ? String(raceResult.err?.message) : '');
   step('sentinel file received', sentinelContent !== null, sentinelContent ? '' : raceResult.kind);
 
   if (sentinelContent) {
@@ -258,6 +336,8 @@ async function main() {
   console.log('==============================================================');
   const ok =
     !earlyExit &&
+    !timedOut &&
+    !spawnError &&
     foundFatal.length === 0 &&
     sentinelContent?.ok === true &&
     sentinelContent?.readyState === 'complete' &&

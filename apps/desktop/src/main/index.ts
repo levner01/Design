@@ -14,7 +14,7 @@
 import { app, BrowserWindow, ipcMain } from 'electron';
 import * as path from 'node:path';
 import * as os from 'node:os';
-import { realpathSync } from 'node:fs';
+import { realpathSync, lstatSync } from 'node:fs';
 import { PROTOCOL_VERSION, APP_VERSION } from '@designwan/contracts';
 
 // 窄 IPC channel 常量；每个业务动作一个具体 channel
@@ -45,6 +45,26 @@ function resolveSmokeSentinelPath(): string | null {
   if (segments.includes('..')) {
     console.error(`[smoke] sentinel path contains '..': ${raw}`);
     return null;
+  }
+
+  // 第五次整改 §B：sentinel 路径本身不得是 symlink。
+  // 攻击场景：攻击者预置 symlink → 外部敏感文件，
+  //   - App 用 wx 写入虽因 EEXIST 失败不会覆盖，但
+  //   - 测试读取 sentinel 时会 follow symlink 读到外部文件内容，造成"假绿"。
+  // 因此必须在 App 端拒绝 symlink 路径，不注册 Probe。
+  try {
+    const stat = lstatSync(resolved);
+    if (stat.isSymbolicLink()) {
+      console.error(`[smoke] sentinel path must not be a symlink: ${raw}`);
+      return null;
+    }
+  } catch (e) {
+    const errno = (e as NodeJS.ErrnoException).code;
+    if (errno !== 'ENOENT') {
+      console.error(`[smoke] sentinel path lstat failed: ${(e as Error).message}`);
+      return null;
+    }
+    // ENOENT：文件不存在，正常（App 会用 wx flag 创建）
   }
 
   // 父目录 realpath 必须位于 <tmpdir>/designwan-smoke-* 专用临时目录
