@@ -38,6 +38,10 @@ function runBuild(cwd) {
     stdio: 'pipe',
     timeout: 120000,
     encoding: 'utf8',
+    // corepack is exposed as corepack.cmd on Windows. The command and all args
+    // are fixed test inputs, so shell resolution is safe and avoids ENOENT.
+    shell: process.platform === 'win32',
+    windowsHide: true,
   });
 }
 

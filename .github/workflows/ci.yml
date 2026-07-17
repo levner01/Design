@@ -28,8 +28,7 @@ jobs:
             arch: x64
             target: mac
             artifact_name: desktop-mac-x64
-            # electron-builder --mac --x64 可能输出 mac/ 或 mac-x64/
-            artifact_glob: apps/desktop/release/mac*/DesignWan.app/Contents/MacOS/DesignWan
+            artifact_glob: apps/desktop/release/mac/DesignWan.app/Contents/MacOS/DesignWan
           - os: windows-latest
             arch: x64
             target: win

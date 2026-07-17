@@ -65,12 +65,19 @@ allOk =
   ])) && allOk;
 
 // 3. TypeScript 类型检查
-allOk = (await runStep('tsc -b (project references)', 'node_modules/.bin/tsc', ['-b'])) && allOk;
+allOk =
+  (await runStep('tsc -b (project references)', 'node', [
+    'node_modules/typescript/bin/tsc',
+    '-b',
+  ])) && allOk;
 
 // 4. Turbo Build（含 esbuild 打包）
 allOk =
-  (await runStep('turbo build (all workspaces)', 'node_modules/.bin/turbo', ['run', 'build'])) &&
-  allOk;
+  (await runStep('turbo build (all workspaces)', 'node', [
+    'node_modules/turbo/bin/turbo',
+    'run',
+    'build',
+  ])) && allOk;
 
 // 5. Extension manifest + 产物引用完整性
 allOk =

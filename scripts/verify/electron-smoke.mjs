@@ -136,8 +136,10 @@ function ensurePackaged() {
 
   step('packaging unpacked app (electron-builder --dir, forced)', true);
   try {
-    const electronBuilder = join(desktopDir, 'node_modules/.bin/electron-builder');
-    execFileSync(electronBuilder, ['--dir', '--publish', 'never'], {
+    // Invoke the JavaScript CLI with the current Node executable. Windows cannot
+    // exec pnpm's extensionless Unix shim from execFileSync.
+    const electronBuilderCli = join(desktopDir, 'node_modules/electron-builder/cli.js');
+    execFileSync(process.execPath, [electronBuilderCli, '--dir', '--publish', 'never'], {
       cwd: desktopDir,
       stdio: 'pipe',
       env: {
@@ -181,8 +183,12 @@ async function main() {
     spawnArgs = testArgs;
   } else {
     // 1. 前置检查：electron 二进制
-    const electronBin = join(desktopDir, 'node_modules/.bin/electron');
-    if (!existsSync(electronBin)) {
+    const electronPackageDir = join(desktopDir, 'node_modules/electron');
+    const electronPathFile = join(electronPackageDir, 'path.txt');
+    const electronBin = existsSync(electronPathFile)
+      ? join(electronPackageDir, 'dist', readFileSync(electronPathFile, 'utf8').trim())
+      : null;
+    if (!electronBin || !existsSync(electronBin)) {
       step('electron binary exists', false, 'electron not installed');
       process.exit(1);
     }
