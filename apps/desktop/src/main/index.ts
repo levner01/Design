@@ -72,6 +72,67 @@ function createWindow(): BrowserWindow {
   }
 
   win.once('ready-to-show', () => win.show());
+
+  // 测试专用 Ready Sentinel（S0 验收正向 Ready 门）
+  // 受 DESIGNWAN_SMOKE_SENTINEL 环境变量控制，不暴露给 Renderer
+  const sentinelPath = process.env.DESIGNWAN_SMOKE_SENTINEL;
+  if (sentinelPath) {
+    let loadFailed = false;
+    let sentinelWritten = false;
+
+    const writeSentinel = async (payload: unknown) => {
+      if (sentinelWritten) return;
+      sentinelWritten = true;
+      const { writeFile } = await import('node:fs/promises');
+      await writeFile(sentinelPath, JSON.stringify(payload));
+    };
+
+    // 主 frame 加载失败（HTML 缺失 / ERR_FILE_NOT_FOUND / 网络错误）→ sentinel.ok=false
+    win.webContents.on(
+      'did-fail-load',
+      (_event, errorCode, errorDescription, _validatedURL, isMainFrame) => {
+        if (!isMainFrame || loadFailed) return;
+        loadFailed = true;
+        const payload = {
+          ok: false,
+          error: `did-fail-load: errorCode=${errorCode} ${errorDescription}`,
+        };
+        writeSentinel(payload)
+          .then(() => {
+            console.error(`[smoke] sentinel failed: ${payload.error}`);
+            app.exit(1);
+          })
+          .catch(() => app.exit(1));
+      },
+    );
+
+    // did-finish-load 在错误页也会触发；如果 loadFailed，跳过 probe
+    win.webContents.on('did-finish-load', async () => {
+      if (loadFailed) return;
+      try {
+        const probe = await win.webContents.executeJavaScript(
+          `(async () => {
+            const readyState = document.readyState;
+            const hasBridge = typeof window.designwan === 'object' && window.designwan !== null;
+            if (!hasBridge) {
+              return { ok: false, error: 'preload bridge missing', readyState };
+            }
+            const negotiateResult = await window.designwan.negotiate();
+            return { ok: true, readyState, hasBridge: true, negotiate: negotiateResult };
+          })()`,
+        );
+        await writeSentinel(probe);
+        if (!probe.ok) {
+          console.error(`[smoke] sentinel failed: ${probe.error}`);
+          app.exit(1);
+        }
+      } catch (e) {
+        await writeSentinel({ ok: false, error: (e as Error).message });
+        app.exit(1);
+      }
+    });
+  }
+
   return win;
 }
 
