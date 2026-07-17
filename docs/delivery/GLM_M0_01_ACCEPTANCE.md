@@ -1,6 +1,12 @@
 # GLM-M0-01 验收记录
 
-结论：`REJECT`
+最终结论：`PASS（S0 已关闭，可进入 GLM-M0-02）`
+
+最终交付点：`64c5ece6c092301caeee53a0495bc67a983e60bf`
+
+远端验收日期：2026-07-17
+
+> 第 1—7 节保留历次复验事实与整改要求；最终远端验收证据见第 9 节。
 
 固定点：`d2bbcb55e9b494a73c932a7891d8775ad67236cf`
 
@@ -327,3 +333,34 @@ Workflow 的 Artifact Resolver 输出 `apps/desktop/release/...` 相对路径；
 仓库仍无 Git Remote，且 `gh auth status` 显示 GitHub 账号 `levner01` 的 Token 已失效。本地代码和 CI 门已完成，但无法在没有远端与有效授权的情况下生成真实 macOS arm64、macOS x64、Windows x64 Run / Artifact / 下载证据。
 
 解除条件：重新执行 `gh auth login -h github.com`，创建或绑定目标 GitHub Repository，Push `cbaeca1` 之后的最终交付 SHA，并等待三平台 Job 与 Artifact 全部通过。完成前 S0 不得标记为最终 PASS，也不得进入 M0-02。
+
+## 9. Codex 最终远端验收：`64c5ece`
+
+最终结论：`PASS（S0 已关闭，可进入 GLM-M0-02）`
+
+### 9.1 仓库与交付点
+
+- Repository：`https://github.com/levner01/Design`
+- Branch：`glm/m0-01-electron-skeleton`
+- Delivery SHA：`64c5ece6c092301caeee53a0495bc67a983e60bf`
+- GitHub Actions Run：`https://github.com/levner01/Design/actions/runs/29574462714`
+- Run 状态：`completed / success`
+
+### 9.2 同一 SHA 的远端矩阵结果
+
+- `not-implemented gates must fail honestly`：PASS；六个后续阶段门均按约定 exit 1，未用假绿掩盖未实现能力。
+- `M0-01 (desktop-mac-arm64)`：PASS；Node 24 冷安装、Build、15 项 `verify:quick`、Native Host、目标架构打包、精确 Artifact Ready Smoke、架构校验与上传全部成功。
+- `M0-01 (desktop-mac-x64)`：PASS；同上，Intel x64 目标 Artifact 独立构建、启动、校验和上传成功。
+- `M0-01 (desktop-win-x64)`：PASS；同上，Windows PE32+ AMD64/x86-64 目标 Artifact 独立构建、启动、校验和上传成功，并明确拒绝 80386。
+
+### 9.3 Artifact 与下载证据
+
+三个 Artifact 均由对应 Matrix Job 在同一 Delivery SHA 生成；每个 Job 都先解析精确可执行文件，执行 Packaged Ready Smoke，再执行架构硬门，最后上传。2026-07-17 通过 GitHub Artifact 下载端点执行 HEAD 复核，三项均返回 `HTTP 200`、`Content-Type: application/zip`、`Accept-Ranges: bytes`：
+
+- `desktop-mac-arm64.zip`：Artifact ID `8404547241`，`404244608` bytes。
+- `desktop-mac-x64.zip`：Artifact ID `8404585797`，`419365238` bytes。
+- `desktop-win-x64.zip`：Artifact ID `8404593671`，`201007986` bytes。
+
+### 9.4 最终判定
+
+远端授权、Node 24 三平台真实执行、Artifact 一一对应、真实 Packaged App Ready、架构硬校验、正反例 Reason Code 和下载可用性均已闭环。第五轮剩余阻塞已全部解除，GLM-M0-01 验收通过。
