@@ -166,3 +166,60 @@ GLM 只需修复以上四项，不得进入 M0-02，不得顺手扩展业务能�
 4. 交付真实 Node 24 三平台 CI Run 与 Artifact 证据。
 
 上述四项未完成前，不得进入 S1 / GLM-M0-02。
+
+## 6. 第四次复验：`be804cd`
+
+复验固定点：`b9d59b6252270994842c8481a52ceb1a7eacba3e`
+
+复验交付点：`be804cd17bcf50da9b7250f5e6dd2c36adda7872`
+
+复验结论：`REJECT（BLOCKED: REMOTE_REQUIRED）`
+
+### 6.1 已修复并通过
+
+- Node 24.18.0 + pnpm 11.13.1 下，`tsc -b --force`、九 Workspace 无缓存 Build 与完整 `verify:quick` 均 exit 0；十五项门禁均报告 PASS。
+- Electron Smoke 在 Spawn 后立即监听 `error`/`exit`/`close`，以 Sentinel、提前退出和超时竞争；Runner 级立即 `exit 0/1` 反例已接入门禁。
+- Chrome Smoke 已从 DesignWan Service Worker URL 提取 Extension ID，并通过 CDP 打开本扩展 Popup、检查专用 Ready 标记；损坏或缺失 Popup 反例已接入门禁。
+- Sentinel 增加 Smoke Mode 双开关、应用专用临时目录、独占创建约束；negotiate 故障注入不再依赖字符串替换。
+- Native Host `AckReader` 已按同一 Waiter 引用清理超时项，并新增“首个超时后第二个 ACK 仍可收到”的回归用例。
+- macOS Artifact 选择已按 `process.arch` 区分 arm64/x64。
+
+### 6.2 阻塞项
+
+#### P0：真实 Node 24 三平台 CI Run / Artifact 仍不存在
+
+`git remote -v` 仍为空；仓库没有 Run URL、交付 SHA 对应的各 Job 结论、Artifact 名称或下载证据。`be804cd` 提交说明也明确写明 `blocked locally without git remote`。`.github/workflows/ci.yml` 的矩阵声明不能代替实际执行，因此 S0 不能 PASS。
+
+修复要求：配置可运行的 Git Remote，在同一交付 SHA 上实际完成 macOS arm64、macOS x64、Windows x64 三个 Node 24 Job，并提交 Run URL、Job 结论、Artifact 名称、下载/文件清单及 SHA。没有远端前，状态必须保持 `BLOCKED: REMOTE_REQUIRED`。
+
+#### P1：Chrome Smoke 会忽略已采集的 Log 错误，也未采集 Service Worker 运行异常
+
+Smoke 虽启用 `Runtime` 与 `Log`，最终只判断 Popup Ready 和 `Runtime.exceptionThrown`，未将 `Log.entryAdded` 纳入失败条件，也没有附着本扩展 Service Worker 采集异常。实测在 Popup 设置 Ready 后注入 `console.error("DESIGNWAN_ACCEPTANCE_INJECTED_POPUP_ERROR")`，Smoke 仍 `exit 0 / PASS`。
+
+修复要求：先创建并附着空白 Target，启用 Page/Runtime/Log 后再导航 Popup，避免漏掉早期事件；附着本扩展 Service Worker；将 Popup/SW 的 Runtime 异常、错误级 Log 与必要的 Console 错误纳入非零门禁，并增加对应反例。
+
+#### P1：Symlink 安全测试在启动前删除了攻击夹具
+
+`sentinel-path-security.test.mjs` 的 Symlink 用例先创建链接，但 `runElectronAndWait()` 开头立即 `rmSync(sentinelPath)`，实际执行时 Symlink 已不存在；最后只断言外部目标未生成，因此当前用例是确定性假绿，不能证明 Symlink 拒绝逻辑。
+
+修复要求：允许 Helper 保留预置路径；启动前断言该路径确为 Symlink；分别覆盖指向已存在和不存在外部目标的链接，并断言外部目标未创建/未改写以及 App 明确拒绝。
+
+#### P1：CI Smoke 没有与 Matrix 目标 Artifact 建立一一对应
+
+Workflow 先按 `matrix.arch` 打包，随后 `electron-smoke.mjs` 又无目标参数强制重新打包，并按宿主 `process.arch` 选包；Artifact 检查也只要求 `release/` 任意文件存在。该流程无法证明 `desktop-mac-arm64`、`desktop-mac-x64`、`desktop-win-x64` 各自验证和上传的是声明架构。
+
+修复要求：每个 Job 先清理 Release 输出，只生成精确 Matrix 目标；对刚生成的固定路径执行 `--no-repackage` Smoke；上传前校验预期文件名和二进制架构，不接受目录中任意文件替代。
+
+### 6.3 工程质量补项
+
+- Electron Runner 负例只断言“非零”，超时、Spawn Error 或前一用例遗留的坏 Artifact 都能让后续用例因错误原因通过。各反例应隔离 Artifact，断言精确 exit 1、未超时并命中特定失败步骤；恢复后必须重打包并先证明正常路径 exit 0。
+- Browser Extension 构建脚本直接加载 Desktop 私有 `node_modules/esbuild`，形成未声明的跨 App 构建依赖；应在 Extension 自身声明构建依赖或抽为正式共享工具包。
+- CDP `send()` 无单请求 Deadline，Socket 关闭也不会 Reject Pending 请求；总超时在发现 Service Worker 后提前清除，存在永久挂起与遗留 Chrome 进程风险。
+
+### 6.4 第五次复验最小范围
+
+1. 提交真实 Node 24 三平台 CI Run / Artifact / SHA 证据，并证明每个 Matrix Job 验证的是对应架构 Artifact。
+2. Chrome Smoke 对 Popup 与 Service Worker 的 Runtime/Log 错误闭环；注入错误但保留 Ready 的反例必须非零。
+3. Symlink 反例必须在夹具真实存在的前提下通过；Electron Runner 反例不得因 Timeout、Spawn Error 或遗留坏包假绿。
+
+以上三项完成前，不得进入 S1 / GLM-M0-02。
