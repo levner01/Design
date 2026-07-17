@@ -25,12 +25,15 @@ const extDir = join(root, 'apps/browser-extension');
 const srcBackground = join(extDir, 'src/background.ts');
 const distBackground = join(extDir, 'dist/background.js');
 
-// 用 pnpm 跑 build 脚本：rimraf dist && tsc -b && node copy-manifest.mjs
+// 用 corepack pnpm 跑 build 脚本：rimraf dist && tsc -b && node scripts/build.mjs && copy-manifest.mjs
 // copy-manifest.mjs 内置产物完整性校验，缺 background.js 时 exit 1
-const pnpmBin = process.env.PNPM_BIN || 'pnpm';
+// 第五次整改 §E：用 corepack pnpm 代替直接 pnpm（pnpm 可能不在 PATH 中）
+// 并检查 spawnSync 是否真的执行（status !== null），避免假绿
+const pnpmBin = process.env.PNPM_BIN || 'corepack';
+const pnpmPrefix = process.env.PNPM_BIN ? [] : ['pnpm'];
 
 function runBuild(cwd) {
-  return spawnSync(pnpmBin, ['run', 'build'], {
+  return spawnSync(pnpmBin, [...pnpmPrefix, 'run', 'build'], {
     cwd,
     stdio: 'pipe',
     timeout: 120000,
@@ -48,6 +51,14 @@ test('FAILURE: deleting src/background.ts → build must fail', () => {
     rmSync(join(extDir, 'browser-extension.tsbuildinfo'), { force: true });
 
     const result = runBuild(extDir);
+
+    // 检查 spawnSync 是否真的执行（status === null 表示命令未找到或信号终止）
+    // 避免假绿：null !== 0 会被 notEqual 误判为通过
+    assert.ok(
+      result.status !== null,
+      `spawnSync failed (status=null): ${result.error?.message || 'command not found'}\n` +
+        `stderr: ${result.stderr}\nstdout: ${result.stdout}`,
+    );
 
     if (result.status === 0) {
       console.error('build stderr:', result.stderr);
@@ -77,6 +88,13 @@ test('RECOVERY: after restoring background.ts → build succeeds', () => {
   rmSync(join(extDir, 'browser-extension.tsbuildinfo'), { force: true });
 
   const result = runBuild(extDir);
+
+  // 检查 spawnSync 是否真的执行（同上，防假绿）
+  assert.ok(
+    result.status !== null,
+    `spawnSync failed (status=null): ${result.error?.message || 'command not found'}\n` +
+      `stderr: ${result.stderr}\nstdout: ${result.stdout}`,
+  );
 
   if (result.status !== 0) {
     console.error('build stderr:', result.stderr);

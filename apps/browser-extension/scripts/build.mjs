@@ -6,33 +6,23 @@
  * - Chrome 扩展运行时无法解析 node_modules 的 bare import
  * - esbuild bundle 会把 contracts 常量内联进单文件，Chrome 才能执行
  *
- * 依赖说明：
- * - esbuild 声明在 @designwan/desktop 的 devDependencies（Electron 构建已使用）
- * - browser-extension 不重复声明，通过 createRequire 跨 workspace 引用
- *   （pnpm 严格隔离模式下，monorepo 共享构建工具的常见做法）
+ * 依赖说明（第五次整改 §E）：
+ * - esbuild 声明在本包（@designwan/browser-extension）的 devDependencies
+ * - 不再通过 createRequire 从 apps/desktop 私有 node_modules 跨包加载
+ * - 避免 App 之间的私有依赖穿透
  */
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
-// apps/browser-extension/scripts -> root（3 级）
-const root = join(here, '..', '..', '..');
-const desktopNodeModules = join(root, 'apps', 'desktop', 'node_modules');
-
-const require = createRequire(import.meta.url);
-
-let esbuild;
-try {
-  // pnpm workspace: esbuild 在 desktop 的 devDependencies
-  esbuild = require(join(desktopNodeModules, 'esbuild'));
-} catch {
-  // fallback: 尝试从当前包或 root 解析（如未来 hoist 策略变化）
-  esbuild = require('esbuild');
-}
-
 const extRoot = join(here, '..');
 const dist = join(extRoot, 'dist');
+
+// 从本包自身 node_modules 解析 esbuild（pnpm workspace 隔离模式下，
+// esbuild 会安装到本包的 node_modules/.pnpm 调度路径下）
+const require = createRequire(import.meta.url);
+const esbuild = require('esbuild');
 
 async function bundlePopup() {
   await esbuild.build({
