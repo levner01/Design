@@ -2,7 +2,8 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta http-equiv="Content-Security-Policy" content="script-src 'self'; object-src 'self'" />
+    <!-- MV3 扩展页面的 CSP 由 manifest.content_security_policy.extension_pages 定义，
+         此处不使用 meta CSP（避免与 manifest 冲突导致页面加载失败） -->
     <title>DesignWan Capture</title>
   </head>
   <body>

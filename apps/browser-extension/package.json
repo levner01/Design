@@ -5,7 +5,7 @@
   "description": "DesignWan Chrome MV3 采集扩展骨架。仅依赖 contracts；不持有长期 Token、不暴露任意 Origin。",
   "type": "module",
   "scripts": {
-    "build": "rimraf dist *.tsbuildinfo && tsc -b && node scripts/copy-manifest.mjs",
+    "build": "rimraf dist *.tsbuildinfo && tsc -b && node scripts/build.mjs && node scripts/copy-manifest.mjs",
     "lint": "tsc --noEmit -p tsconfig.json",
     "test": "node --test scripts/manifest-parse.test.mjs",
     "clean": "rimraf dist *.tsbuildinfo"
