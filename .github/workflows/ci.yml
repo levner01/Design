@@ -51,7 +51,6 @@ jobs:
       - name: Setup pnpm 11
         uses: pnpm/action-setup@v4
         with:
-          version: 11
           run_install: false
 
       - name: Frozen install (Node 24 cold install)
@@ -214,7 +213,6 @@ jobs:
       - run: corepack enable
       - uses: pnpm/action-setup@v4
         with:
-          version: 11
           run_install: false
       - run: corepack pnpm install --frozen-lockfile
       - name: verify:local-data must exit 1
