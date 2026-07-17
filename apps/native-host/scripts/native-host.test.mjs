@@ -61,12 +61,10 @@ class AckReader {
 
   readAck(timeoutMs = 5000) {
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        const idx = this.waiters.indexOf({ resolve, reject });
-        if (idx >= 0) this.waiters.splice(idx, 1);
-        reject(new Error(`readAck timeout (${timeoutMs}ms)`));
-      }, timeoutMs);
-      this.waiters.push({
+      // 保存同一 waiter 引用，timeout 时用 indexOf(waiter) 删除同一个对象
+      // 之前用 indexOf({resolve,reject}) 新对象永远不等于队列中的原对象，
+      // 导致超时 waiter 无法被移除，后续 ACK 会被错误地 resolve 给已超时的 waiter
+      const waiter = {
         resolve: (v) => {
           clearTimeout(timer);
           resolve(v);
@@ -75,7 +73,13 @@ class AckReader {
           clearTimeout(timer);
           reject(e);
         },
-      });
+      };
+      const timer = setTimeout(() => {
+        const idx = this.waiters.indexOf(waiter);
+        if (idx >= 0) this.waiters.splice(idx, 1);
+        reject(new Error(`readAck timeout (${timeoutMs}ms)`));
+      }, timeoutMs);
+      this.waiters.push(waiter);
       this._tryResolve();
     });
   }
@@ -267,6 +271,27 @@ test('50-round stability: continuous single-chunk messages', async () => {
       assert.equal(ack.type, 'ack', `round ${i}: expected ack`);
       assert.equal(ack.payload.received, true, `round ${i}: expected received=true`);
     }
+  } finally {
+    reader.cleanup();
+    host.stdin.end();
+    host.kill();
+  }
+});
+
+// ── 10. 第一个 waiter 超时，第二个 ACK 仍正确收到 ────────
+// 验证 AckReader 超时清理使用同一引用，超时 waiter 不会吞掉后续 ACK
+test('timeout cleanup: first waiter times out, second ACK still received', async () => {
+  const host = startHost();
+  const reader = new AckReader(host.stdout);
+  try {
+    // 第一个 readAck 用短超期，不发消息，必然超时
+    await assert.rejects(reader.readAck(200), /readAck timeout/, 'first readAck should timeout');
+
+    // 超时后发一条消息，第二个 readAck 应正确收到
+    host.stdin.write(encodeMessage({ type: 'hello', seq: 'after-timeout' }));
+    const ack = await reader.readAck(5000);
+    assert.equal(ack.type, 'ack', 'second readAck should receive ACK');
+    assert.equal(ack.payload.received, true, 'second ACK should have received=true');
   } finally {
     reader.cleanup();
     host.stdin.end();
