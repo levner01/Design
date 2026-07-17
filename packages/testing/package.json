@@ -20,7 +20,7 @@
     "build": "tsc -b",
     "lint": "tsc --noEmit -p tsconfig.json",
     "test": "echo 'testing utilities skeleton' && exit 0",
-    "clean": "rimraf dist *.tsbuildinfo"
+    "clean": "rimraf dist testing.tsbuildinfo"
   },
   "dependencies": {
     "@designwan/contracts": "workspace:*"

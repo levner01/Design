@@ -56,6 +56,9 @@ jobs:
       - name: Frozen install (Node 24 cold install)
         run: corepack pnpm install --frozen-lockfile
 
+      - name: Install pinned Chromium for extension smoke
+        run: corepack pnpm exec playwright install chromium
+
       - name: Electron binary check
         run: |
           corepack pnpm --filter @designwan/desktop exec electron --version

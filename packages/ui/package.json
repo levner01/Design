@@ -24,7 +24,7 @@
     "build": "tsc -b",
     "lint": "tsc --noEmit -p tsconfig.json",
     "test": "echo 'no UI tests yet (M0-01 skeleton)' && exit 0",
-    "clean": "rimraf dist *.tsbuildinfo"
+    "clean": "rimraf dist ui.tsbuildinfo"
   },
   "dependencies": {
     "@designwan/contracts": "workspace:*"

@@ -25,6 +25,7 @@ import * as os from 'node:os';
 import { join } from 'node:path';
 import { createServer } from 'node:net';
 import { fileURLToPath } from 'node:url';
+import { chromium } from 'playwright';
 import { banner, step } from './lib/not-implemented.mjs';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
@@ -41,7 +42,10 @@ const POST_READY_GRACE_MS = 2000;
 const CDP_SEND_TIMEOUT_MS = 10000;
 
 function findChrome() {
-  const candidates = [];
+  // Playwright exposes the exact executable path for its pinned Chromium
+  // revision. CI installs that revision explicitly because branded Chrome
+  // disables --load-extension; keep local system browsers as fallbacks only.
+  const candidates = [chromium.executablePath()];
   // Chrome for Testing 和 Chromium 支持 --load-extension；
   // Chrome stable 150+ 禁用了 --load-extension（extension_service.cc 报
   // "is not allowed in Google Chrome"），因此优先使用 Chrome for Testing。

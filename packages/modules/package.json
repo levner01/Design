@@ -16,7 +16,7 @@
     "build": "tsc -b",
     "lint": "tsc --noEmit -p tsconfig.json",
     "test": "echo 'no business modules yet (M0-01 skeleton)' && exit 0",
-    "clean": "rimraf dist *.tsbuildinfo"
+    "clean": "rimraf dist modules.tsbuildinfo"
   },
   "dependencies": {
     "@designwan/contracts": "workspace:*"

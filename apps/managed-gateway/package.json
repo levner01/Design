@@ -10,7 +10,7 @@
     "lint": "tsc --noEmit -p tsconfig.json",
     "start": "node dist/index.js",
     "test": "echo 'no gateway tests yet (M0-01 skeleton)' && exit 0",
-    "clean": "rimraf dist *.tsbuildinfo"
+    "clean": "rimraf dist managed-gateway.tsbuildinfo"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
