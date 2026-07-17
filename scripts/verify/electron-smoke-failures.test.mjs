@@ -1,17 +1,16 @@
 #!/usr/bin/env node
 /**
- * Electron Smoke 失败路径测试。
+ * Electron Smoke 失败路径测试（Sentinel 级）。
  *
- * 验证 smoke sentinel 机制能正确检测以下故障：
- *   1. Renderer HTML 缺失
- *   2. Preload 缺失
- *   3. Preload 模块格式错误
- *   4. negotiate 失败（IPC handler 返回错误）
- *   5. Ready 超时（进程崩溃不发 sentinel）
- *   6. 进程提前退出
+ * 验证 main 进程 sentinel 机制能正确检测以下故障：
+ *   1. Renderer HTML 缺失 → did-fail-load → ok=false
+ *   2. Preload 缺失 → bridge missing → ok=false
+ *   3. Preload 空文件 → bridge missing → ok=false
+ *   4. Preload ESM 格式 → SyntaxError → ok=false
+ *   5. negotiate 失败（DESIGNWAN_TEST_NEGOTIATE_FAIL=1）→ result.ok=false
+ *   6. 进程提前退出 → 无 sentinel
  *
- * 失败测试用源码 `electron .` + 破坏 dist/ 来验证 sentinel 逻辑，
- * 正向 packaged smoke 由 electron-smoke.mjs 独立验证。
+ * Runner 级测试（直接跑 electron-smoke.mjs）在 electron-smoke-runner.test.mjs。
  */
 import { spawn } from 'node:child_process';
 import { test } from 'node:test';
@@ -19,11 +18,10 @@ import assert from 'node:assert/strict';
 import {
   existsSync,
   rmSync,
+  mkdtempSync,
   readFileSync,
   writeFileSync,
-  renameSync,
   copyFileSync,
-  statSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
@@ -38,9 +36,6 @@ const distMain = join(desktopDir, 'dist/main');
 
 /**
  * 解析 Electron 真实二进制路径（绕过 node_modules/.bin/electron shell script）。
- *
- * spawn 一个 shell script 在 Node.js 上会触发 ENOEXEC 或静默失败。
- * 这里直接读 electron/path.txt 拿到 dist 下的二进制相对路径。
  */
 function findElectronBinary() {
   if (process.env.ELECTRON_OVERRIDE_DIST_PATH) {
@@ -64,13 +59,23 @@ function findElectronBinary() {
 const electronBin = findElectronBinary();
 
 /**
- * 启动 electron + sentinel，返回结果。
+ * 创建专用临时目录 + sentinel 路径（满足 main 的路径安全校验）。
  */
-function runElectronWithSentinel(timeoutMs = 12000) {
-  const sentinel = join(
-    tmpdir(),
-    `designwan-fail-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.json`,
-  );
+function createSmokeSentinelPath() {
+  const smokeDir = mkdtempSync(join(tmpdir(), 'designwan-smoke-'));
+  return {
+    dir: smokeDir,
+    sentinel: join(smokeDir, 'sentinel.json'),
+  };
+}
+
+/**
+ * 启动 electron + sentinel，返回结果。
+ *
+ * extraEnv 允许注入 DESIGNWAN_TEST_NEGOTIATE_FAIL 等测试开关。
+ */
+function runElectronWithSentinel(timeoutMs = 12000, extraEnv = {}) {
+  const { dir: smokeDir, sentinel } = createSmokeSentinelPath();
   rmSync(sentinel, { force: true });
 
   const child = spawn(electronBin, ['.', '--no-sandbox'], {
@@ -78,9 +83,11 @@ function runElectronWithSentinel(timeoutMs = 12000) {
     stdio: ['pipe', 'pipe', 'pipe'],
     env: {
       ...process.env,
+      DESIGNWAN_SMOKE_MODE: '1',
       DESIGNWAN_SMOKE_SENTINEL: sentinel,
       ELECTRON_DISABLE_GPU: '1',
       ELECTRON_ENABLE_LOGGING: '0',
+      ...extraEnv,
     },
   });
 
@@ -91,16 +98,23 @@ function runElectronWithSentinel(timeoutMs = 12000) {
 
   return new Promise((resolve) => {
     let done = false;
+    let checkSentinel = null;
     const finish = (result) => {
       if (done) return;
       done = true;
       clearTimeout(timer);
+      if (checkSentinel) clearInterval(checkSentinel);
       try {
         child.kill('SIGTERM');
-        setTimeout(() => child.kill('SIGKILL'), 2000);
+        setTimeout(() => {
+          try {
+            child.kill('SIGKILL');
+          } catch {}
+        }, 2000);
       } catch {
         // 已退出
       }
+      rmSync(smokeDir, { force: true, recursive: true });
       resolve({ ...result, stderr, sentinel });
     };
 
@@ -117,7 +131,6 @@ function runElectronWithSentinel(timeoutMs = 12000) {
           // 忽略
         }
       }
-      // 调试日志：看 child 为什么 exit
       if (!sentinelContent) {
         console.log(
           `[debug] child exit code=${code} signal=${signal}, sentinel not written, stderr=${stderr.slice(0, 200)}`,
@@ -127,12 +140,11 @@ function runElectronWithSentinel(timeoutMs = 12000) {
     });
 
     // 如果收到 sentinel 但进程没退出，也 finish
-    const checkSentinel = setInterval(() => {
+    checkSentinel = setInterval(() => {
       if (existsSync(sentinel)) {
         try {
           const content = JSON.parse(readFileSync(sentinel, 'utf8'));
           if (content.ok !== undefined) {
-            clearInterval(checkSentinel);
             finish({ sentinelContent: content });
           }
         } catch {
@@ -230,35 +242,22 @@ test('FAILURE: preload ESM format (import statement) → sentinel ok=false', asy
 });
 
 test('FAILURE: negotiate returns error → sentinel.negotiate.result.ok=false', async () => {
-  const mainJsPath = join(distMain, 'index.js');
-  const original = readFileSync(mainJsPath, 'utf8');
-  const b = backup(mainJsPath);
-  try {
-    // 篡改 negotiate handler 返回错误
-    const broken = original.replace(
-      'result: { ok: true, value: { protocol: PROTOCOL_VERSION, app: APP_VERSION } }',
-      "result: { ok: false, error: { message: 'injected failure' } }",
-    );
-    if (broken === original) {
-      // 如果替换没命中，跳过（不 fail）
-      assert.ok(true, 'negotiate handler pattern not found, skipping');
-      return;
-    }
-    writeFileSync(mainJsPath, broken);
-    const result = await runElectronWithSentinel();
-    // probe 仍 ok:true（hasBridge:true），但 negotiate.result.ok=false
-    const negOk = result.sentinelContent?.negotiate?.result?.ok === false;
-    assert.ok(
-      negOk,
-      `expected negotiate.result.ok=false but got: ${JSON.stringify(result.sentinelContent)}`,
-    );
-  } finally {
-    restore(b);
-  }
+  // 使用稳定的测试开关注入 negotiate 故障，不依赖编译产物字符串替换
+  // main 在 SMOKE_MODE=1 时检查 DESIGNWAN_TEST_NEGOTIATE_FAIL=1
+  const result = await runElectronWithSentinel(12000, {
+    DESIGNWAN_TEST_NEGOTIATE_FAIL: '1',
+  });
+
+  // probe 应 ok:true（hasBridge:true），但 negotiate.result.ok=false
+  const negOk = result.sentinelContent?.negotiate?.result?.ok === false;
+  assert.ok(
+    negOk,
+    `expected negotiate.result.ok=false but got: ${JSON.stringify(result.sentinelContent)}`,
+  );
 });
 
 test('FAILURE: process killed early → timeout (no sentinel)', async () => {
-  const sentinel = join(tmpdir(), `designwan-early-${process.pid}-${Date.now()}.json`);
+  const { dir: smokeDir, sentinel } = createSmokeSentinelPath();
   rmSync(sentinel, { force: true });
 
   const child = spawn(electronBin, ['.', '--no-sandbox'], {
@@ -266,6 +265,7 @@ test('FAILURE: process killed early → timeout (no sentinel)', async () => {
     stdio: ['pipe', 'pipe', 'pipe'],
     env: {
       ...process.env,
+      DESIGNWAN_SMOKE_MODE: '1',
       DESIGNWAN_SMOKE_SENTINEL: sentinel,
       ELECTRON_DISABLE_GPU: '1',
     },
@@ -280,5 +280,5 @@ test('FAILURE: process killed early → timeout (no sentinel)', async () => {
 
   // sentinel 不应存在
   assert.ok(!existsSync(sentinel), 'sentinel should not exist after early kill');
-  rmSync(sentinel, { force: true });
+  rmSync(smokeDir, { force: true, recursive: true });
 });

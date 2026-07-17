@@ -9,11 +9,17 @@
  *   - negotiate() 成功
  *   - Protocol / App Version 符合 Contract
  *
- * 超时、提前退出、Renderer Error、Preload Error、IPC 失败、版本不一致 → exit 1。
+ * 第四次复验 §5.2 修复：
+ * - spawn 后立即注册 error/exit/close，用 Promise.race 竞争
+ *   sentinel/提前退出/spawn error/timeout，没有完整 sentinel 一律 exit 1
+ * - Artifact 按 process.arch 选择，不固定优先 mac-arm64
+ * - 强制重新生成 artifact，不只比较 main/index.js mtime
+ * - Sentinel 路径必须在 <tmpdir>/designwan-smoke-* 专用临时目录
+ *
  * S0 验收模式禁止通过 DISABLE_ELECTRON_SMOKE 跳过。
  */
 import { spawn, execFileSync } from 'node:child_process';
-import { existsSync, rmSync, statSync, readFileSync } from 'node:fs';
+import { existsSync, rmSync, mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -31,48 +37,46 @@ if (process.env.DISABLE_ELECTRON_SMOKE === '1') {
   process.exit(1);
 }
 
-// ── 找 unpacked app 可执行文件 ──────────────────────────
+// ── 按 process.arch 选择 unpacked app ─────────────────────
 function findUnpackedApp() {
   if (process.platform === 'darwin') {
-    // release/mac-arm64/DesignWan.app 或 release/mac-x64/
-    const dirs = ['mac-arm64', 'mac', 'mac-x64'];
-    for (const d of dirs) {
+    // arm64 只选 mac-arm64，x64 只选 mac-x64/mac
+    const archDirs =
+      process.arch === 'arm64' ? ['mac-arm64'] : process.arch === 'x64' ? ['mac-x64', 'mac'] : [];
+    for (const d of archDirs) {
       const appPath = join(releaseDir, d, 'DesignWan.app');
       const exe = join(appPath, 'Contents', 'MacOS', 'DesignWan');
-      if (existsSync(exe)) return { exe, appPath };
+      if (existsSync(exe)) return { exe, appPath, arch: d };
     }
     return null;
   }
   if (process.platform === 'win32') {
     const exe = join(releaseDir, 'win-unpacked', 'DesignWan.exe');
-    if (existsSync(exe)) return { exe, appPath: dirname(exe) };
+    if (existsSync(exe)) return { exe, appPath: dirname(exe), arch: 'x64' };
     return null;
   }
   // Linux: release/linux-unpacked/designwan
   const exe = join(releaseDir, 'linux-unpacked', 'designwan');
-  if (existsSync(exe)) return { exe, appPath: dirname(exe) };
+  if (existsSync(exe)) return { exe, appPath: dirname(exe), arch: process.arch };
   return null;
 }
 
-// ── 打包 unpacked app（如果不存在或 dist 更新） ──────────
-async function ensurePackaged() {
-  const existing = findUnpackedApp();
-  const distMain = join(desktopDir, 'dist', 'main', 'index.js');
-  const distMtime = existsSync(distMain) ? statSync(distMain).mtimeMs : 0;
+// ── 强制重新打包 unpacked app ─────────────────────────────
+// --no-repackage: runner 级测试用，跳过打包以注入假 exe 测试提前退出
+const skipRepackage = process.argv.includes('--no-repackage');
 
-  if (existing) {
-    const asarPath = join(
-      existing.appPath,
-      process.platform === 'darwin' ? join('Contents', 'Resources', 'app.asar') : 'resources',
-    );
-    const appMtime = existsSync(asarPath) ? statSync(asarPath).mtimeMs : 0;
-    if (appMtime >= distMtime) {
-      step('unpacked app exists and up-to-date', true);
-      return existing;
+function ensurePackaged() {
+  if (skipRepackage) {
+    const existing = findUnpackedApp();
+    if (!existing) {
+      step(`find unpacked app for arch=${process.arch}`, false, 'no app found (--no-repackage)');
+      process.exit(1);
     }
+    step(`use existing unpacked app (${existing.arch}, --no-repackage)`, true);
+    return existing;
   }
 
-  step('packaging unpacked app (electron-builder --dir)', true);
+  step('packaging unpacked app (electron-builder --dir, forced)', true);
   try {
     const electronBuilder = join(desktopDir, 'node_modules/.bin/electron-builder');
     execFileSync(electronBuilder, ['--dir', '--publish', 'never'], {
@@ -92,9 +96,10 @@ async function ensurePackaged() {
 
   const app = findUnpackedApp();
   if (!app) {
-    step('find unpacked app after build', false, 'no app found in release/');
+    step(`find unpacked app for arch=${process.arch}`, false, 'no app found in release/');
     process.exit(1);
   }
+  step(`unpacked app ready (${app.arch})`, true);
   return app;
 }
 
@@ -116,77 +121,93 @@ async function main() {
   }
   step('dist/main/index.js exists', true);
 
-  // 3. 确保 unpacked app 存在
-  const app = await ensurePackaged();
+  // 3. 强制重新打包（不复用旧 artifact，避免 stale 假绿）
+  const app = ensurePackaged();
 
-  // 4. 创建 sentinel 文件路径
-  const sentinelFile = join(tmpdir(), `designwan-smoke-${process.pid}-${Date.now()}.json`);
+  // 4. 创建专用临时目录 + sentinel 文件路径（满足 main 的路径安全校验）
+  const smokeDir = mkdtempSync(join(tmpdir(), 'designwan-smoke-'));
+  const sentinelFile = join(smokeDir, 'sentinel.json');
   rmSync(sentinelFile, { force: true });
 
-  // 5. 启动 packaged app
+  // 5. 启动 packaged app + 立即注册 error/exit/close
   const SMOKE_TIMEOUT_MS = 30000;
   let stderrOutput = '';
-  let exited = false;
-  let sentinelContent = null;
 
   const child = spawn(app.exe, [], {
     cwd: dirname(app.exe),
     stdio: ['pipe', 'pipe', 'pipe'],
     env: {
       ...process.env,
+      DESIGNWAN_SMOKE_MODE: '1',
       DESIGNWAN_SMOKE_SENTINEL: sentinelFile,
       ELECTRON_DISABLE_GPU: '1',
       ELECTRON_ENABLE_LOGGING: '0',
     },
-    timeout: SMOKE_TIMEOUT_MS,
   });
 
-  const timeoutHandle = setTimeout(() => {
-    if (!exited) {
-      child.kill('SIGTERM');
-      setTimeout(() => {
-        if (!exited) child.kill('SIGKILL');
-      }, 3000);
-    }
-  }, SMOKE_TIMEOUT_MS);
+  // 立即注册 error/exit/close，避免事件丢失（§5.2 根因）
+  const exitPromise = new Promise((resolve) => {
+    child.on('error', (err) => resolve({ kind: 'error', err }));
+    child.on('exit', (code, signal) => resolve({ kind: 'exit', code, signal }));
+    child.on('close', (code, signal) => resolve({ kind: 'close', code, signal }));
+  });
 
   child.stderr.on('data', (data) => {
     stderrOutput += data.toString();
   });
 
-  // 6. 轮询 sentinel 文件
-  const pollStart = Date.now();
-  while (!sentinelContent && Date.now() - pollStart < SMOKE_TIMEOUT_MS && !exited) {
-    if (existsSync(sentinelFile)) {
-      try {
-        sentinelContent = JSON.parse(readFileSync(sentinelFile, 'utf8'));
-      } catch {
-        // 文件可能还在写入中，继续轮询
+  // 6. Promise.race 竞争：sentinel / 提前退出 / spawn error / timeout
+  const sentinelPromise = (async () => {
+    const pollStart = Date.now();
+    while (Date.now() - pollStart < SMOKE_TIMEOUT_MS) {
+      if (existsSync(sentinelFile)) {
+        try {
+          return { kind: 'sentinel', content: JSON.parse(readFileSync(sentinelFile, 'utf8')) };
+        } catch {
+          // 文件可能还在写入中，继续轮询
+        }
       }
+      await new Promise((r) => setTimeout(r, 100));
     }
-    if (!sentinelContent && !exited) {
-      await new Promise((r) => setTimeout(r, 200));
+    return { kind: 'timeout' };
+  })();
+
+  let timeoutTimer = null;
+  const timeoutPromise = new Promise((resolve) => {
+    timeoutTimer = setTimeout(() => resolve({ kind: 'timeout' }), SMOKE_TIMEOUT_MS);
+  });
+
+  const raceResult = await Promise.race([sentinelPromise, exitPromise, timeoutPromise]);
+
+  // 7. 收到 sentinel 或超时后，确保子进程退出
+  if (raceResult.kind === 'sentinel' || raceResult.kind === 'timeout') {
+    try {
+      child.kill('SIGTERM');
+    } catch {
+      // 已退出
+    }
+    // 给进程 3s 优雅退出，否则 SIGKILL
+    await new Promise((r) => setTimeout(r, 100));
+    try {
+      if (child.exitCode === null && child.signalCode === null) {
+        child.kill('SIGKILL');
+      }
+    } catch {
+      // 已退出
     }
   }
 
-  // 等待进程退出
-  const exitCode = await new Promise((resolve) => {
-    child.on('exit', (code, signal) => {
-      if (exited) return;
-      exited = true;
-      clearTimeout(timeoutHandle);
-      resolve({ code, signal });
-    });
-    // 如果已经收到 sentinel，主动 kill
-    if (sentinelContent) {
-      child.kill('SIGTERM');
-      setTimeout(() => {
-        if (!exited) child.kill('SIGKILL');
-      }, 3000);
-    }
-  });
+  // 等待 exit/close 事件最终触发（最多 3s），避免 zombie
+  await Promise.race([exitPromise, new Promise((r) => setTimeout(r, 3000))]);
 
-  // 7. 验证结果
+  // 清理 timeout timer
+  if (timeoutTimer) clearTimeout(timeoutTimer);
+
+  // 8. 验证结果
+  const sentinelContent = raceResult.kind === 'sentinel' ? raceResult.content : null;
+  const earlyExit =
+    raceResult.kind === 'exit' || raceResult.kind === 'close' || raceResult.kind === 'error';
+
   const fatalErrors = [
     'ERR_FILE_NOT_FOUND',
     'SyntaxError',
@@ -197,7 +218,12 @@ async function main() {
   const foundFatal = fatalErrors.filter((e) => stderrOutput.includes(e));
 
   step('no fatal errors in stderr', foundFatal.length === 0, foundFatal.join(', ') || '');
-  step('sentinel file received', sentinelContent !== null, sentinelContent ? '' : 'timeout');
+  step(
+    'no early exit (sentinel received before exit)',
+    !earlyExit,
+    earlyExit ? `early ${raceResult.kind}` : '',
+  );
+  step('sentinel file received', sentinelContent !== null, sentinelContent ? '' : raceResult.kind);
 
   if (sentinelContent) {
     step(
@@ -221,8 +247,8 @@ async function main() {
     }
   }
 
-  // 清理 sentinel 文件
-  rmSync(sentinelFile, { force: true });
+  // 清理
+  rmSync(smokeDir, { force: true, recursive: true });
 
   if (stderrOutput.trim()) {
     console.log('stderr (first 800 chars):');
@@ -231,6 +257,7 @@ async function main() {
 
   console.log('==============================================================');
   const ok =
+    !earlyExit &&
     foundFatal.length === 0 &&
     sentinelContent?.ok === true &&
     sentinelContent?.readyState === 'complete' &&
