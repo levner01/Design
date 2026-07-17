@@ -291,3 +291,39 @@ Workflow 的 Artifact Resolver 输出 `apps/desktop/release/...` 相对路径；
 4. 提交同一 SHA 的真实 Node 24 三平台 CI Run / Artifact / 下载证据。
 
 上述四项完成前，不得进入 S1 / GLM-M0-02。
+
+## 8. Codex 本地整改：`cbaeca1`
+
+整改固定点：`8be773640f0b649fd6a016e99cbd64a4ce77814b`
+
+整改交付点：`cbaeca129b210070b42ddaa2b47e8bcb12a796ba`
+
+整改结论：`LOCAL PASS；S0 BLOCKED: REMOTE_AUTH_REQUIRED`
+
+### 8.1 本地整改结果
+
+- `--artifact` 统一解析为绝对路径；Runner 已增加从仓库根传入相对 Artifact 并真实启动成功的回归测试。
+- Electron Smoke 为 Spawn Error、提前退出、超时、损坏 Sentinel、negotiate 失败、Renderer 加载失败和 Preload 缺失输出唯一 Reason Code；负例精确断言 exit 1、Reason Code、无 `spawnSync.error`，每个夹具后执行正向恢复证明。
+- Service Worker Attach、Runtime Enable、Log Enable 和独立 Session 成为 Chrome Smoke 硬门；未附着不再使用 Browser Bucket 冒充 SW 证据。
+- Popup/SW 反例精确匹配 `[popup]` / `[sw]` 注入 Marker；Chrome Early Exit 改为 `process.execPath + .cjs` 跨平台 Fixture，并覆盖受控 Spawn Error。
+- Chrome 增加总 Deadline 主动中断和统一 `finally` 清理；`verify:quick` 外层 Timeout 已包含内层执行与清理预算。
+- Sentinel Symlink 测试收集 stderr，并精确断言 App 的 `SENTINEL_SYMLINK_REJECTED` 证据；Helper 等待 Electron `close` 后才进入下一用例。
+- CI 使用当前 GitHub Runner 标签 `macos-15`、`macos-15-intel`、`windows-latest`；Artifact Resolver 输出绝对唯一路径，Windows x64 明确要求 PE32+ AMD64 并拒绝 80386，Release 目录执行可失败白名单。
+
+### 8.2 验证证据
+
+验证环境：Node 24.18.0；pnpm 11.13.1；macOS arm64。
+
+- `pnpm install --frozen-lockfile`：exit 0。
+- `pnpm exec tsc -b --force`：exit 0。
+- `pnpm exec turbo run build --force`：9/9 Workspace、0 cache、exit 0。
+- `pnpm verify:quick`：15/15 门禁 PASS、exit 0。
+- Electron Runner 包含相对 Artifact 真启动、四类跨平台 Fixture、negotiate/HTML/Preload 失败和正向恢复，整套 PASS。
+- Chrome Extension 九项正反例整套 PASS；Popup/SW Marker、Early Exit 和 Spawn Error 均命中专用 Reason Code。
+- Sentinel 路径安全整套 PASS；两个真实 Symlink 场景均命中 App 拒绝证据。
+
+### 8.3 唯一剩余阻塞
+
+仓库仍无 Git Remote，且 `gh auth status` 显示 GitHub 账号 `levner01` 的 Token 已失效。本地代码和 CI 门已完成，但无法在没有远端与有效授权的情况下生成真实 macOS arm64、macOS x64、Windows x64 Run / Artifact / 下载证据。
+
+解除条件：重新执行 `gh auth login -h github.com`，创建或绑定目标 GitHub Repository，Push `cbaeca1` 之后的最终交付 SHA，并等待三平台 Job 与 Artifact 全部通过。完成前 S0 不得标记为最终 PASS，也不得进入 M0-02。
