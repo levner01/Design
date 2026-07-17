@@ -13,6 +13,8 @@
  */
 import { app, BrowserWindow, ipcMain } from 'electron';
 import * as path from 'node:path';
+import * as os from 'node:os';
+import { realpathSync } from 'node:fs';
 import { PROTOCOL_VERSION, APP_VERSION } from '@designwan/contracts';
 
 // 窄 IPC channel 常量；每个业务动作一个具体 channel
@@ -20,6 +22,65 @@ const IPC_CHANNEL_NEGOTIATE = 'designwan:negotiate';
 const IPC_CHANNEL_PING = 'designwan:ping';
 
 const isDev = process.env.NODE_ENV === 'development';
+
+/**
+ * 校验并返回安全的 Sentinel 路径。
+ *
+ * 安全约束（第四次复验 §5.3）：
+ * - 必须同时满足 DESIGNWAN_SMOKE_MODE === '1' 和 DESIGNWAN_SMOKE_SENTINEL
+ * - 路径规范化后不得包含 `..`
+ * - 父目录 realpath 必须位于 <tmpdir>/designwan-smoke-* 专用临时目录
+ * - 禁止符号链接逃逸、任意绝对路径、覆盖已有非 Sentinel 文件
+ *
+ * 生产启动（SMOKE_MODE 未开启）完全不注册 Probe，不执行测试用 executeJavaScript。
+ */
+function resolveSmokeSentinelPath(): string | null {
+  if (process.env.DESIGNWAN_SMOKE_MODE !== '1') return null;
+  const raw = process.env.DESIGNWAN_SMOKE_SENTINEL;
+  if (!raw) return null;
+
+  // 规范化：resolve 后路径段不得为 `..`
+  const resolved = path.resolve(raw);
+  const segments = resolved.split(path.sep);
+  if (segments.includes('..')) {
+    console.error(`[smoke] sentinel path contains '..': ${raw}`);
+    return null;
+  }
+
+  // 父目录 realpath 必须位于 <tmpdir>/designwan-smoke-* 专用临时目录
+  // 注意：macOS 上 os.tmpdir() 返回 /var/...，但 realpathSync 解析为 /private/var/...
+  // 需要对 tmpdir 也做 realpath，确保前缀比较一致
+  const parent = path.dirname(resolved);
+  let realTmpdir: string;
+  try {
+    realTmpdir = realpathSync(os.tmpdir());
+  } catch (e) {
+    console.error(`[smoke] tmpdir not accessible: ${os.tmpdir()} (${(e as Error).message})`);
+    return null;
+  }
+  const expectedPrefix = path.join(realTmpdir, 'designwan-smoke-');
+  let realParent: string;
+  try {
+    realParent = realpathSync(parent);
+  } catch (e) {
+    console.error(
+      `[smoke] sentinel parent dir not accessible: ${parent} (${(e as Error).message})`,
+    );
+    return null;
+  }
+  if (!realParent.startsWith(expectedPrefix)) {
+    console.error(`[smoke] sentinel parent must be under ${expectedPrefix}*, got ${realParent}`);
+    return null;
+  }
+
+  // 文件名必须是 .json 后缀
+  if (!resolved.endsWith('.json')) {
+    console.error(`[smoke] sentinel path must end with .json: ${raw}`);
+    return null;
+  }
+
+  return resolved;
+}
 
 function createWindow(): BrowserWindow {
   const win = new BrowserWindow({
@@ -74,8 +135,9 @@ function createWindow(): BrowserWindow {
   win.once('ready-to-show', () => win.show());
 
   // 测试专用 Ready Sentinel（S0 验收正向 Ready 门）
-  // 受 DESIGNWAN_SMOKE_SENTINEL 环境变量控制，不暴露给 Renderer
-  const sentinelPath = process.env.DESIGNWAN_SMOKE_SENTINEL;
+  // 受 DESIGNWAN_SMOKE_MODE + DESIGNWAN_SMOKE_SENTINEL 双开关控制
+  // 生产启动（SMOKE_MODE !== '1'）完全不注册 Probe
+  const sentinelPath = resolveSmokeSentinelPath();
   if (sentinelPath) {
     let loadFailed = false;
     let sentinelWritten = false;
@@ -84,7 +146,8 @@ function createWindow(): BrowserWindow {
       if (sentinelWritten) return;
       sentinelWritten = true;
       const { writeFile } = await import('node:fs/promises');
-      await writeFile(sentinelPath, JSON.stringify(payload));
+      // 独占创建：flag 'wx' 在文件已存在时报错，避免覆盖已有非 Sentinel 文件
+      await writeFile(sentinelPath, JSON.stringify(payload), { flag: 'wx' });
     };
 
     // 主 frame 加载失败（HTML 缺失 / ERR_FILE_NOT_FOUND / 网络错误）→ sentinel.ok=false
@@ -102,7 +165,10 @@ function createWindow(): BrowserWindow {
             console.error(`[smoke] sentinel failed: ${payload.error}`);
             app.exit(1);
           })
-          .catch(() => app.exit(1));
+          .catch((e) => {
+            console.error(`[smoke] sentinel write failed: ${(e as Error).message}`);
+            app.exit(1);
+          });
       },
     );
 
@@ -127,7 +193,7 @@ function createWindow(): BrowserWindow {
           app.exit(1);
         }
       } catch (e) {
-        await writeSentinel({ ok: false, error: (e as Error).message });
+        await writeSentinel({ ok: false, error: (e as Error).message }).catch(() => {});
         app.exit(1);
       }
     });
@@ -138,12 +204,25 @@ function createWindow(): BrowserWindow {
 
 app.whenReady().then(() => {
   // 窄 IPC 注册：每个动作一个具体 handler，参数由 Main 重新校验
-  ipcMain.handle(IPC_CHANNEL_NEGOTIATE, () => ({
-    result: { ok: true, value: { protocol: PROTOCOL_VERSION, app: APP_VERSION } },
-    handledWith: { protocol: PROTOCOL_VERSION, app: APP_VERSION },
-  }));
+  // 测试故障注入：SMOKE_MODE=1 且 DESIGNWAN_TEST_NEGOTIATE_FAIL=1 时返回 ok:false
+  // 生产模式（SMOKE_MODE !== '1'）不受影响，无法被环境变量注入故障
+  const smokeMode = process.env.DESIGNWAN_SMOKE_MODE === '1';
+  const negotiateFail = process.env.DESIGNWAN_TEST_NEGOTIATE_FAIL === '1';
+
+  ipcMain.handle(IPC_CHANNEL_NEGOTIATE, () => {
+    if (smokeMode && negotiateFail) {
+      return {
+        result: { ok: false as const, error: { message: 'injected test failure' } },
+        handledWith: { protocol: PROTOCOL_VERSION, app: APP_VERSION },
+      };
+    }
+    return {
+      result: { ok: true as const, value: { protocol: PROTOCOL_VERSION, app: APP_VERSION } },
+      handledWith: { protocol: PROTOCOL_VERSION, app: APP_VERSION },
+    };
+  });
   ipcMain.handle(IPC_CHANNEL_PING, () => ({
-    result: { ok: true, value: { status: 'ok' as const, timestamp: Date.now() } },
+    result: { ok: true as const, value: { status: 'ok' as const, timestamp: Date.now() } },
     handledWith: { protocol: PROTOCOL_VERSION, app: APP_VERSION },
   }));
 
