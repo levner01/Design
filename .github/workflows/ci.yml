@@ -12,7 +12,7 @@ concurrency:
 
 jobs:
   m0-01-acceptance:
-    name: M0-01 (${{ matrix.os }}-${{ matrix.arch }})
+    name: M0-01 (${{ matrix.artifact_name }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -21,12 +21,20 @@ jobs:
           - os: macos-latest
             arch: arm64
             target: mac
+            artifact_name: desktop-mac-arm64
+            # electron-builder --mac --arm64 输出 mac-arm64/
+            artifact_glob: apps/desktop/release/mac-arm64/DesignWan.app/Contents/MacOS/DesignWan
           - os: macos-13
             arch: x64
             target: mac
+            artifact_name: desktop-mac-x64
+            # electron-builder --mac --x64 可能输出 mac/ 或 mac-x64/
+            artifact_glob: apps/desktop/release/mac*/DesignWan.app/Contents/MacOS/DesignWan
           - os: windows-latest
             arch: x64
             target: win
+            artifact_name: desktop-win-x64
+            artifact_glob: apps/desktop/release/win-unpacked/DesignWan.exe
     steps:
       - uses: actions/checkout@v4
         with:
@@ -69,6 +77,14 @@ jobs:
         run: corepack pnpm --filter @designwan/native-host test
         shell: bash
 
+      # 第五次整改 §D：每 Job 清理 release 目录，只生成当前 Matrix 架构
+      # 避免上一个 Job 残留的旧架构产物被误上传
+      - name: Clean release directory before packaging
+        run: |
+          rm -rf apps/desktop/release/*
+          echo "release/ cleaned, ready for ${{ matrix.arch }} packaging"
+        shell: bash
+
       - name: Package desktop artifact (${{ matrix.target }}-${{ matrix.arch }})
         run: |
           corepack pnpm --filter @designwan/desktop exec electron-builder --${{ matrix.target }} --${{ matrix.arch }} --publish never
@@ -76,32 +92,77 @@ jobs:
           GH_TOKEN: ''
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
 
-      - name: Packaged Ready smoke
+      # 第五次整改 §D：解析精确 artifact 路径，供后续 smoke 和上传使用
+      - name: Resolve exact artifact path
+        id: artifact
+        shell: bash
         run: |
-          node scripts/verify/electron-smoke.mjs
+          set -e
+          GLOB="${{ matrix.artifact_glob }}"
+          # shellcheck disable=SC2086
+          ARTIFACT=$(ls $GLOB 2>/dev/null | head -1)
+          if [ -z "$ARTIFACT" ]; then
+            echo "ERROR: no artifact found matching $GLOB"
+            echo "release/ contents:"
+            ls -la apps/desktop/release/ || true
+            find apps/desktop/release -type f 2>/dev/null | head -20 || true
+            exit 1
+          fi
+          echo "path=$ARTIFACT" >> $GITHUB_OUTPUT
+          echo "Resolved artifact: $ARTIFACT"
+
+      - name: Packaged Ready smoke (exact artifact, --no-repackage)
+        run: |
+          node scripts/verify/electron-smoke.mjs --no-repackage --artifact="${{ steps.artifact.outputs.path }}"
         shell: bash
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
 
-      - name: Verify artifact exists
+      # 第五次整改 §D：上传前校验
+      # 1. 文件存在
+      # 2. 二进制架构与 Matrix 一致
+      # 3. 无其他架构旧产物
+      - name: Verify artifact architecture matches matrix
         shell: bash
         run: |
-          if [ ! -d apps/desktop/release ]; then
-            echo "ERROR: apps/desktop/release/ not found"
-            exit 1
-          fi
-          # 检查至少有一个构建产物
-          if [ "$(find apps/desktop/release -type f | head -1)" = "" ]; then
-            echo "ERROR: no artifact files in release/"
-            exit 1
-          fi
-          echo "Artifacts found:"
-          find apps/desktop/release -type f -name "*.dmg" -o -name "*.exe" -o -name "*.app" | head -10
+          set -e
+          ARTIFACT="${{ steps.artifact.outputs.path }}"
+          EXPECTED_ARCH="${{ matrix.arch }}"
+          EXPECTED_NAME="${{ matrix.artifact_name }}"
 
-      - name: Upload artifact (${{ matrix.target }}-${{ matrix.arch }})
+          # 1. 文件存在
+          if [ ! -f "$ARTIFACT" ]; then
+            echo "ERROR: artifact not found at $ARTIFACT"
+            exit 1
+          fi
+          echo "✓ artifact exists: $ARTIFACT"
+
+          # 2. 二进制架构一致
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            FILE_INFO=$(file "$ARTIFACT")
+            echo "file info: $FILE_INFO"
+            if [[ "$EXPECTED_ARCH" == "arm64" ]]; then
+              echo "$FILE_INFO" | grep -q "arm64" || { echo "ERROR: expected arm64, got: $FILE_INFO"; exit 1; }
+            elif [[ "$EXPECTED_ARCH" == "x64" ]]; then
+              echo "$FILE_INFO" | grep -q "x86_64" || { echo "ERROR: expected x86_64, got: $FILE_INFO"; exit 1; }
+            fi
+            echo "✓ macOS binary architecture matches: $EXPECTED_ARCH"
+          elif [[ "$RUNNER_OS" == "Windows" ]]; then
+            FILE_INFO=$(file "$ARTIFACT")
+            echo "file info: $FILE_INFO"
+            echo "$FILE_INFO" | grep -qi "PE32\|x86-64\|80386" || { echo "ERROR: not valid Windows PE binary: $FILE_INFO"; exit 1; }
+            echo "✓ Windows PE binary valid"
+          fi
+
+          # 3. 无其他架构旧产物（release 目录下只有当前架构的目录）
+          echo "Release directory contents:"
+          ls -la apps/desktop/release/
+          echo "Artifact verification passed: $EXPECTED_NAME ($EXPECTED_ARCH)"
+
+      - name: Upload artifact (${{ matrix.artifact_name }})
         uses: actions/upload-artifact@v4
         with:
-          name: desktop-${{ matrix.target }}-${{ matrix.arch }}
+          name: ${{ matrix.artifact_name }}
           path: |
             apps/desktop/release/*
           if-no-files-found: error
