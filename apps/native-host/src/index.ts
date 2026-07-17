@@ -36,8 +36,10 @@ async function readMessage(): Promise<{
   if (header === null) return { closed: true };
   const length = header.readUInt32LE(0);
   if (length <= 0 || length > 1_000_000) {
-    log(`invalid message length: ${length}`);
-    return { closed: false };
+    // 超长帧或零长度：立即终止会话，不在未知 Body 边界上继续解析。
+    // 不分配攻击者声明的超大 Buffer。
+    log(`fatal: invalid message length ${length}, terminating session`);
+    process.exit(1);
   }
   const body = await readExact(length);
   if (body === null) return { closed: true };
