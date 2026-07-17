@@ -16,6 +16,11 @@
  *   8. Electron Packaged Ready smoke（正向 Ready 证据，禁止跳过）
  *   9. Electron smoke 失败路径测试（HTML/Preload/negotiate/超时/提前退出）
  *   10. Native Host 协议测试（单 chunk / 拆 chunk / 连续帧 / 超长帧 / 50 轮）
+ *   11. Extension Chrome 加载 smoke（Popup/SW/Ready 标记）
+ *   12. Extension 干净构建回归测试
+ *   13. Electron Smoke Runner 级失败测试（8 场景）
+ *   14. Sentinel 路径安全测试（路径穿越/symlink/外部路径）
+ *   15. Chrome Extension Smoke 反例测试（popup.js 损坏/缺失/SW 不匹配/Chrome 提前退出）
  *
  * 任一失败，verify:quick 失败。不使用假绿。S0 模式禁止跳过 Electron smoke。
  */
@@ -112,7 +117,7 @@ allOk =
 // 11. Extension Chrome 加载 smoke
 allOk =
   (await runStep('extension chrome smoke', 'node', ['scripts/verify/extension-chrome-smoke.mjs'], {
-    timeout: 30000,
+    timeout: 60000,
   })) && allOk;
 
 // 12. Extension 干净构建回归测试（删除 background.ts 后构建必须失败）
@@ -123,6 +128,39 @@ allOk =
     ['--test', 'scripts/verify/extension-clean-build.test.mjs'],
     {
       timeout: 120000,
+    },
+  )) && allOk;
+
+// 13. Electron Smoke Runner 级失败测试（直接跑 electron-smoke.mjs，8 场景）
+allOk =
+  (await runStep(
+    'electron smoke runner tests',
+    'node',
+    ['--test', 'scripts/verify/electron-smoke-runner.test.mjs'],
+    {
+      timeout: 300000,
+    },
+  )) && allOk;
+
+// 14. Sentinel 路径安全测试
+allOk =
+  (await runStep(
+    'sentinel path security tests',
+    'node',
+    ['--test', 'scripts/verify/sentinel-path-security.test.mjs'],
+    {
+      timeout: 120000,
+    },
+  )) && allOk;
+
+// 15. Chrome Extension Smoke 反例测试（popup.js 损坏/缺失/SW 不匹配/Chrome 提前退出）
+allOk =
+  (await runStep(
+    'extension chrome smoke failure tests',
+    'node',
+    ['--test', 'scripts/verify/extension-chrome-smoke-failures.test.mjs'],
+    {
+      timeout: 300000,
     },
   )) && allOk;
 
