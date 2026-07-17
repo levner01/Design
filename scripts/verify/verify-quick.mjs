@@ -13,10 +13,11 @@
  *   5. Browser Extension manifest 解析 + 产物引用完整性
  *   6. Desktop 安全配置静态检查
  *   7. Desktop 产物完整性检查（dist/ 文件齐全）
- *   8. Electron 启动 smoke（无 ERR_FILE_NOT_FOUND / Preload SyntaxError）
- *   9. Native Host 协议测试（单 chunk / 拆 chunk / 连续帧 / 畸形）
+ *   8. Electron Packaged Ready smoke（正向 Ready 证据，禁止跳过）
+ *   9. Electron smoke 失败路径测试（HTML/Preload/negotiate/超时/提前退出）
+ *   10. Native Host 协议测试（单 chunk / 拆 chunk / 连续帧 / 超长帧 / 50 轮）
  *
- * 任一失败，verify:quick 失败。不使用假绿。
+ * 任一失败，verify:quick 失败。不使用假绿。S0 模式禁止跳过 Electron smoke。
  */
 import { fileURLToPath } from 'node:url';
 import { runCmd, truncateOutput } from './lib/run-cmd.mjs';
@@ -84,23 +85,46 @@ allOk =
     'scripts/verify/artifact-integrity-check.mjs',
   ])) && allOk;
 
-// 8. Electron 启动 smoke（验证 preload CJS + renderer 加载 + 无 ERR_FILE_NOT_FOUND）
-// 在无显示器的 CI 环境可设置 DISABLE_ELECTRON_SMOKE=1 跳过
-if (process.env.DISABLE_ELECTRON_SMOKE === '1') {
-  console.log('[SKIP] electron startup smoke (DISABLE_ELECTRON_SMOKE=1)');
-} else {
-  allOk =
-    (await runStep('electron startup smoke', 'node', ['scripts/verify/electron-smoke.mjs'], {
-      timeout: 15000,
-    })) && allOk;
-}
+// 8. Electron Packaged Ready smoke（正向 Ready 证据，S0 禁止跳过）
+allOk =
+  (await runStep('electron packaged ready smoke', 'node', ['scripts/verify/electron-smoke.mjs'], {
+    timeout: 120000,
+  })) && allOk;
 
-// 9. Native Host 协议测试
+// 9. Electron smoke 失败路径测试
+allOk =
+  (await runStep(
+    'electron smoke failure tests',
+    'node',
+    ['--test', 'scripts/verify/electron-smoke-failures.test.mjs'],
+    {
+      timeout: 120000,
+    },
+  )) && allOk;
+
+// 10. Native Host 协议测试
 allOk =
   (await runStep('native-host protocol test', 'node', [
     '--test',
     'apps/native-host/scripts/native-host.test.mjs',
   ])) && allOk;
+
+// 11. Extension Chrome 加载 smoke
+allOk =
+  (await runStep('extension chrome smoke', 'node', ['scripts/verify/extension-chrome-smoke.mjs'], {
+    timeout: 30000,
+  })) && allOk;
+
+// 12. Extension 干净构建回归测试（删除 background.ts 后构建必须失败）
+allOk =
+  (await runStep(
+    'extension clean build regression',
+    'node',
+    ['--test', 'scripts/verify/extension-clean-build.test.mjs'],
+    {
+      timeout: 120000,
+    },
+  )) && allOk;
 
 console.log('==============================================================');
 if (allOk) {

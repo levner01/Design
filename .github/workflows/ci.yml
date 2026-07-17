@@ -11,13 +11,22 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  verify-quick:
-    name: verify:quick (${{ matrix.os }})
+  m0-01-acceptance:
+    name: M0-01 (${{ matrix.os }}-${{ matrix.arch }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, windows-latest]
+        include:
+          - os: macos-latest
+            arch: arm64
+            target: mac
+          - os: macos-13
+            arch: x64
+            target: mac
+          - os: windows-latest
+            arch: x64
+            target: win
     steps:
       - uses: actions/checkout@v4
         with:
@@ -31,81 +40,71 @@ jobs:
       - name: Enable Corepack
         run: corepack enable
 
-      - name: Setup pnpm
+      - name: Setup pnpm 11
         uses: pnpm/action-setup@v4
         with:
           version: 11
           run_install: false
 
-      - name: Install dependencies (Node 24 cold install)
+      - name: Frozen install (Node 24 cold install)
         run: corepack pnpm install --frozen-lockfile
 
-      - name: Verify Electron binary
+      - name: Electron binary check
         run: |
           corepack pnpm --filter @designwan/desktop exec electron --version
         shell: bash
 
-      - name: Typecheck
-        run: corepack pnpm exec tsc -b
+      - name: TypeScript typecheck
+        run: corepack pnpm exec tsc -b --force
 
-      - name: Build
-        run: corepack pnpm build
+      - name: Build (no cache)
+        run: corepack pnpm exec turbo run build --force
 
-      - name: verify:quick (with Electron smoke)
+      - name: verify:quick (packaged ready smoke + failures + native host + chrome)
         run: corepack pnpm verify:quick
         env:
-          # macOS CI 有显示器；Windows CI 也有
-          DISABLE_ELECTRON_SMOKE: '0'
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
 
-  desktop-artifacts:
-    name: desktop artifact (${{ matrix.os }}-${{ matrix.arch }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: macos-latest
-            target: mac
-            arch: arm64
-          - os: macos-13
-            target: mac
-            arch: x64
-          - os: windows-latest
-            target: win
-            arch: x64
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-      - run: corepack enable
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 11
-          run_install: false
-      - run: corepack pnpm install --frozen-lockfile
-      - name: Build desktop (tsc + esbuild)
-        run: corepack pnpm --filter @designwan/desktop build
-      - name: Verify Electron runs
-        run: corepack pnpm --filter @designwan/desktop exec electron --version
+      - name: Native Host test (explicit)
+        run: corepack pnpm --filter @designwan/native-host test
         shell: bash
-      - name: Package smoke (${{ matrix.target }}-${{ matrix.arch }})
-        run: corepack pnpm --filter @designwan/desktop exec electron-builder --${{ matrix.target }} --${{ matrix.arch }} --publish never
+
+      - name: Package desktop artifact (${{ matrix.target }}-${{ matrix.arch }})
+        run: |
+          corepack pnpm --filter @designwan/desktop exec electron-builder --${{ matrix.target }} --${{ matrix.arch }} --publish never
         env:
           GH_TOKEN: ''
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
-      - name: List artifacts
+
+      - name: Packaged Ready smoke
         run: |
-          ls -la apps/desktop/release/ || true
+          node scripts/verify/electron-smoke.mjs
         shell: bash
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+
+      - name: Verify artifact exists
+        shell: bash
+        run: |
+          if [ ! -d apps/desktop/release ]; then
+            echo "ERROR: apps/desktop/release/ not found"
+            exit 1
+          fi
+          # 检查至少有一个构建产物
+          if [ "$(find apps/desktop/release -type f | head -1)" = "" ]; then
+            echo "ERROR: no artifact files in release/"
+            exit 1
+          fi
+          echo "Artifacts found:"
+          find apps/desktop/release -type f -name "*.dmg" -o -name "*.exe" -o -name "*.app" | head -10
+
       - name: Upload artifact (${{ matrix.target }}-${{ matrix.arch }})
-        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: desktop-${{ matrix.target }}-${{ matrix.arch }}
           path: |
             apps/desktop/release/*
-          if-no-files-found: warn
+          if-no-files-found: error
           retention-days: 7
 
   not-implemented-gates:
