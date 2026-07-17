@@ -223,3 +223,71 @@ Workflow 先按 `matrix.arch` 打包，随后 `electron-smoke.mjs` 又无目标�
 3. Symlink 反例必须在夹具真实存在的前提下通过；Electron Runner 反例不得因 Timeout、Spawn Error 或遗留坏包假绿。
 
 以上三项完成前，不得进入 S1 / GLM-M0-02。
+
+## 7. 第五次复验：`61810cd`
+
+复验固定点：`dda2abdaad640f7e28cf0e819ff13f95e997bb9e`
+
+复验交付点：`61810cdff4a587892340c5e89c8891a906e123a9`
+
+复验结论：`REJECT（BLOCKED: REMOTE_REQUIRED + LOCAL_FIX_REQUIRED）`
+
+### 7.1 已修复并通过
+
+- Node 24.18.0 + pnpm 11.13.1 下，Frozen Install、TypeScript 强制检查、九 Workspace 无缓存 Build 与完整 `verify:quick` 均 exit 0；十五项本地门禁报告 PASS。
+- Popup 已改为先创建 `about:blank` Target，附着并启用 Page/Runtime/Log 后再导航；Popup Ready 后 `console.error` 与延迟 Service Worker `throw` 反例当前均能触发非零。
+- CDP 单请求 Deadline、Socket 关闭时 Reject Pending、Popup/SW 分 Session 错误汇总和 Browser.close 清理已实现。
+- Sentinel 测试不再删除预置 Symlink，已覆盖指向不存在及已存在外部文件的真实链接夹具；App 端增加 `lstat` 拒绝 Symlink。
+- Electron Runner 已使用 Node 脚本 Fixture 替代伪装成 `.exe` 的 Shell，并开始断言精确 exit 1。
+- Browser Extension 已自行声明 `esbuild`，不再穿透 Desktop 私有依赖。
+
+### 7.2 阻塞项
+
+#### P0：真实 Node 24 三平台 CI Run / Artifact 仍未交付
+
+`git remote -v` 仍为空；仓库没有 Run URL、同一交付 SHA 的三个 Job 结论、Artifact 文件清单、实际架构和下载验证。未跟踪的 `第五轮整改.md` 是任务提示词，不是交付报告。Workflow 声明不能替代真实运行证据。
+
+修复要求：配置可运行 Remote，在同一交付 SHA 上完成 macOS arm64、macOS x64、Windows x64 三个 Node 24 Job，并交付 Run URL、Job/Artifact/SHA/架构/下载证据。完成前必须保持 `BLOCKED: REMOTE_REQUIRED`。
+
+#### P1：CI 的“精确 Artifact”相对路径会让 Smoke 从错误目录启动
+
+Workflow 的 Artifact Resolver 输出 `apps/desktop/release/...` 相对路径；`electron-smoke.mjs` 原样把该字符串作为 Spawn Command，同时将 `cwd` 设置为该相对路径的父目录，导致命令路径被重复拼接。按 CI 当前传参方式实测：Artifact 前置检查 PASS，随后 `spawn ... ENOENT`，Smoke exit 1。因此当前三平台 Job 即使获得 Remote 也无法通过。
+
+修复要求：CLI 收到 Artifact 参数后立即基于 Repo Root 解析为绝对路径，CI 也应输出绝对路径；增加“从仓库根传入相对路径仍真实启动成功”的回归测试。
+
+#### P1：Service Worker 附着失败不影响最终 PASS
+
+十次 `Target.attachToTarget` 全失败时仅输出失败步骤，没有设置 `flowError`；最终 `ok` 不要求 `swAttached` 或独立 `swSessionId`。`swSessionId === null` 时还会把 Browser Bucket 当作 SW Summary，形成错误证据归属。
+
+修复要求：SW 附着和 Runtime/Log Enable 必须是硬门；失败时输出唯一 Reason Code 并明确 exit 1；未建立独立 SW Session 时禁止生成 SW PASS 结论。最终条件必须包含 `swAttached && swSessionId !== null && !isOverdue()`。
+
+#### P1：反例仍可因无关失败原因通过
+
+- Electron Runner 多个原因正则仍包含通用 `FAIL`，而 Helper 已提前断言存在 `FAIL`；损坏 Sentinel 甚至接受 Early Exit 或 Timeout，未证明识别了坏 JSON。
+- Popup/SW 反例接受 `console.error`、`exceptionThrown` 等固定步骤文字，而正常的 `no console.error` / `no Runtime.exceptionThrown` 行本身就包含这些词。
+- `runSmoke()` 没有返回并断言 `spawnSync().error`；HTML 和 Preload 夹具恢复后也没有分别立即重打包并证明正向 exit 0。
+
+修复要求：为每个失败场景输出唯一 Reason Code，反例精确匹配注入 Marker 所在 Session 的错误证据；删除所有 `|FAIL` 兜底和固定步骤名匹配；每个夹具恢复后立即执行正向 Smoke。
+
+#### P1：Symlink 测试没有证明 App 明确拒绝
+
+测试读端对任何 Symlink 都固定返回 `null`，最终又以 `sentinelContent === null` 作为“App 拒绝”证据。即使 App 没执行 `lstat` 拒绝逻辑，该测试仍会通过；目前只证明外部文件未改写，没有验证拒绝分支被命中。
+
+修复要求：Helper 收集 stderr 与退出状态，精确断言 App 输出 Symlink 拒绝 Reason/Marker；或通过正式 Smoke Runner 断言专用非零结果。不能用读端主动忽略链接代替 App 拒绝证据。
+
+#### P1：Windows x64 与跨平台门仍不成立
+
+- Windows 架构正则接受 `80386`，32 位 PE 也会被标记为 x64；所谓“无其他架构旧产物”只有 `ls`，没有失败断言。
+- Chrome Early Exit Fixture 仍创建 POSIX `#!/bin/sh` 文件；Windows Job 无法把它作为 Chrome Executable 运行，Chrome Spawn 也没有受控 `error` Listener。
+- Chrome Smoke 内部总 Deadline 与 `verify:quick` 外层 Timeout 同为 60 秒，慢速 CI 可能在 Browser.close/Profile 清理前被外层直接杀死。
+
+修复要求：Windows 精确校验 PE32+ 与 AMD64/x86-64，并显式拒绝 80386；Release 使用可失败白名单；Chrome Fixture 改用 `process.execPath + .cjs` 并捕获 Spawn Error；外层 Timeout 必须覆盖内层最坏时间和清理预算。
+
+### 7.3 第六次复验最小范围
+
+1. 修复相对 Artifact 路径，提交能真实启动精确 Artifact 的回归证据。
+2. SW 附着成为硬门；所有 Popup/SW/Electron/Symlink 反例使用唯一 Reason Code，不能依赖通用文字假绿。
+3. Windows x64 架构、跨平台 Chrome Fixture、Release 白名单与 Deadline 闭环。
+4. 提交同一 SHA 的真实 Node 24 三平台 CI Run / Artifact / 下载证据。
+
+上述四项完成前，不得进入 S1 / GLM-M0-02。
