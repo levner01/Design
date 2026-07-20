@@ -20,7 +20,10 @@ import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 
 import { ReasonCode } from '../../../tests/spikes/local-persistence/lib/reason-codes.mjs';
-import { CANARY_TOKEN } from '../../../tests/spikes/local-persistence/lib/fixture.mjs';
+import {
+  CANARY_TOKEN,
+  cleanupFixtureDir,
+} from '../../../tests/spikes/local-persistence/lib/fixture.mjs';
 import {
   resolveVecLoadablePath,
   resolveDriverNativePath,
@@ -135,7 +138,7 @@ const cases = [
             : 'encrypted DB header still leaks',
         };
       } finally {
-        rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+        cleanupFixtureDir(dir);
       }
     },
   },
@@ -184,7 +187,7 @@ const cases = [
           posReason: posOk ? 'correct key reads data' : 'correct key failed',
         };
       } finally {
-        rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+        cleanupFixtureDir(dir);
       }
     },
   },
@@ -222,7 +225,7 @@ const cases = [
           posReason: posOk ? 'valid migration SQL applied' : 'valid SQL failed',
         };
       } finally {
-        rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+        cleanupFixtureDir(dir);
       }
     },
   },
@@ -270,7 +273,7 @@ const cases = [
           posReason: posOk ? 'fresh DB after corruption cleanup reads ok' : 'recovery failed',
         };
       } finally {
-        rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+        cleanupFixtureDir(dir);
       }
     },
   },
@@ -312,7 +315,7 @@ const cases = [
             : `after delete, MATCH returned ${after.length} rows`,
         };
       } finally {
-        rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+        cleanupFixtureDir(dir);
       }
     },
   },
@@ -390,7 +393,7 @@ const cases = [
             : `after delete, vec0 returned ${after.length} rows`,
         };
       } finally {
-        rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+        cleanupFixtureDir(dir);
       }
     },
   },
@@ -432,7 +435,7 @@ const cases = [
             : 'encrypted DB leaks Canary',
         };
       } finally {
-        rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+        cleanupFixtureDir(dir);
       }
     },
   },

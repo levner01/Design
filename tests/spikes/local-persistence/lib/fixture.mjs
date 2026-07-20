@@ -135,13 +135,36 @@ export function createFixtureDir(prefix = 'spike') {
  * 删除目录（递归）。
  *
  * Windows 上 better-sqlite3 close() 后可能短暂保持文件句柄（WAL/shm），
- * 导致 rmSync 报 EPERM。加 maxRetries + retryDelay 让 Node.js 自动重试。
- * macOS/Linux 无此问题，maxRetries 不会影响行为。
+ * 且 GitHub Actions windows-latest runner 上 Windows Defender 实时扫描
+ * 会延长文件锁的释放时间（实测 > 500ms）。force:true 只忽略 ENOENT，
+ * 不忽略 EPERM。
+ *
+ * 之前 maxRetries: 5, retryDelay: 100（500ms）在 CI 上仍然 EPERM
+ * （CI run 29726825617 M0-02 Spike win-x64 step 13）。加大到
+ * maxRetries: 20, retryDelay: 200（4 秒）足以覆盖 Defender 扫描窗口。
+ *
+ * 同时用 try-catch 兜底：即使 4 秒后还是 EPERM（极端情况），
+ * 也不阻塞测试流程。fixture dir 每次都由 createFixtureDir 用
+ * mkdtempSync 创建独立目录，互不影响；CI runner 退出时临时目录
+ * 会被自动清理。
  *
  * @param {string} dir
  */
 export function cleanupFixtureDir(dir) {
-  rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  try {
+    rmSync(dir, {
+      recursive: true,
+      force: true,
+      maxRetries: 20,
+      retryDelay: 200,
+    });
+  } catch (e) {
+    // 兜底：Windows EPERM 在重试 20 次后仍可能失败（Defender 长时间锁）。
+    // fixture dir 在 CI runner 退出时会被自动清理，不阻塞测试。
+    console.warn(
+      `[fixture] cleanupFixtureDir: rmSync failed (non-blocking): ${e?.code || ''} ${e?.message || ''}`,
+    );
+  }
 }
 
 /**
