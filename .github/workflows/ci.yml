@@ -269,9 +269,19 @@ jobs:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
 
       # verify:local-data --spike 必须在 electron-builder 之前跑：
-      # pnpm install 默认编译 better_sqlite3.node 为 Node.js ABI，
       # verify:local-data 用 Node.js 跑需要 Node.js ABI。
       # electron-builder 的 @electron/rebuild 会重编译为 Electron ABI，覆盖 Node.js ABI。
+      - name: Rebuild better-sqlite3 for Node.js ABI (not Electron)
+        run: |
+          set -e
+          cd node_modules/.pnpm/better-sqlite3-multiple-ciphers@12.11.1/node_modules/better-sqlite3-multiple-ciphers
+          # prebuild-install 可能下载 Electron ABI 的预构建版本（NODE_MODULE_VERSION 130），
+          # 但 verify:local-data --spike 用 Node.js 24 跑需要 ABI 137。
+          # 强制用 node-gyp 为当前 Node.js 重编译（pnpm-workspace.yaml override node-gyp ^11）。
+          npx node-gyp rebuild --release
+          node -e "const v=require('./build/Release/better_sqlite3.node'); console.log('node abi ok:', process.versions.modules)"
+        shell: bash
+
       - name: verify:local-data --spike (Node.js ABI, save metrics)
         run: |
           set -o pipefail
