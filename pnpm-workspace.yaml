@@ -6,3 +6,6 @@ packages:
 allowBuilds:
   electron: true
   esbuild: true
+  # M0-02 本地持久化 Spike 原生依赖：精确锁版本，禁止 ^/*/latest
+  better-sqlite3-multiple-ciphers: true
+  sqlite-vec: true

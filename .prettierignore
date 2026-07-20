@@ -11,3 +11,6 @@ apps/browser-extension/dist/
 apps/browser-extension/assets/
 # 任务卡/整改详单不参与格式检查
 第五轮整改.md
+m2-02.md
+# Spike 运行产物（已 gitignore）
+tests/spikes/local-persistence/run/

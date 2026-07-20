@@ -102,3 +102,15 @@ entitlements.*.plist
 .security/
 scan-results/
 .dns-link/
+
+# M0-02 本地持久化 Spike 运行产物（数据库、WAL、密钥、报告、原生二进制）
+tests/spikes/local-persistence/run/
+tests/spikes/local-persistence/**/*.sqlite
+tests/spikes/local-persistence/**/*.sqlite3
+tests/spikes/local-persistence/**/*.db
+tests/spikes/local-persistence/**/*.db-wal
+tests/spikes/local-persistence/**/*.db-shm
+tests/spikes/local-persistence/**/*.tmp
+tests/spikes/local-persistence/spike-*.json
+tests/spikes/local-persistence/SPIKE_REPORT.md
+
