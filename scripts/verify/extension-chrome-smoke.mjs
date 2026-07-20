@@ -369,7 +369,27 @@ async function cleanupChrome(browserClient, child, debugPort, userDataDir) {
   }
 
   // 4. 删除临时 Profile
-  rmSync(userDataDir, { force: true, recursive: true });
+  //
+  // Windows 上 Chrome close 后可能短暂持有 userDataDir 中的文件句柄
+  // （LOCK 文件、Cookies DB、GPU cache 等），rmSync 报 EPERM。
+  // force:true 只忽略 ENOENT，不忽略 EPERM。加 maxRetries + retryDelay
+  // 让 Node.js 自动重试（5 次 × 100ms = 500ms 通常足够 Chrome 释放锁）。
+  //
+  // 同时用 try-catch 兜底：cleanup 失败不应阻塞 main 流程，所有 16 个
+  // 验证步骤已 PASS 时 smoke 应该 exit 0。warning 而非 fail，避免
+  // "所有 PASS 但 exit 1" 的诡异现象。
+  try {
+    rmSync(userDataDir, {
+      force: true,
+      recursive: true,
+      maxRetries: 5,
+      retryDelay: 100,
+    });
+  } catch (e) {
+    console.warn(
+      `[chrome-smoke] cleanup: rmSync userDataDir failed (non-blocking): ${e?.code || ''} ${e?.message || ''}`,
+    );
+  }
 }
 
 async function main() {
