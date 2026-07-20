@@ -16,6 +16,7 @@ import * as path from 'node:path';
 import * as os from 'node:os';
 import { realpathSync, lstatSync } from 'node:fs';
 import { PROTOCOL_VERSION, APP_VERSION } from '@designwan/contracts';
+import { runSpikeIfEnabled } from './spike-runner.js';
 
 // 窄 IPC channel 常量；每个业务动作一个具体 channel
 const IPC_CHANNEL_NEGOTIATE = 'designwan:negotiate';
@@ -224,7 +225,15 @@ function createWindow(): BrowserWindow {
   return win;
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+  // M0-02 02-E：Packaged Spike Runner（双开关限制）
+  // 生产启动（SPIKE_MODE !== '1'）完全不执行 Spike，不写 sentinel，不暴露给 Renderer/Preload。
+  // Spike 模式下不创建窗口，跑完核心验证后直接 app.exit(0|1)。
+  if (process.env.DESIGNWAN_SPIKE_MODE === '1') {
+    await runSpikeIfEnabled();
+    return;
+  }
+
   // 窄 IPC 注册：每个动作一个具体 handler，参数由 Main 重新校验
   // 测试故障注入：SMOKE_MODE=1 且 DESIGNWAN_TEST_NEGOTIATE_FAIL=1 时返回 ok:false
   // 生产模式（SMOKE_MODE !== '1'）不受影响，无法被环境变量注入故障

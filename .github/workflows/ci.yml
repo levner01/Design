@@ -204,6 +204,206 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  m0-02-spike-acceptance:
+    name: M0-02 Spike (${{ matrix.artifact_name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            arch: arm64
+            target: mac
+            artifact_name: local-persistence-spike-mac-arm64
+            # electron-builder --mac --arm64 输出 mac-arm64/
+            artifact_glob: apps/desktop/release/mac-arm64/DesignWan.app/Contents/MacOS/DesignWan
+          - os: macos-15-intel
+            arch: x64
+            target: mac
+            artifact_name: local-persistence-spike-mac-x64
+            # electron-builder --mac --x64 输出 mac/
+            artifact_glob: apps/desktop/release/mac/DesignWan.app/Contents/MacOS/DesignWan
+          - os: windows-latest
+            arch: x64
+            target: win
+            artifact_name: local-persistence-spike-win-x64
+            artifact_glob: apps/desktop/release/win-unpacked/DesignWan.exe
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Setup pnpm 11
+        uses: pnpm/action-setup@v4
+        with:
+          run_install: false
+
+      - name: Frozen install (Node 24 cold install)
+        run: corepack pnpm install --frozen-lockfile
+
+      - name: Install pinned Chromium for extension smoke
+        run: corepack pnpm exec playwright install chromium
+
+      - name: Electron binary check
+        run: |
+          corepack pnpm --filter @designwan/desktop exec electron --version
+        shell: bash
+
+      - name: TypeScript typecheck
+        run: corepack pnpm exec tsc -b --force
+
+      - name: Build (no cache)
+        run: corepack pnpm exec turbo run build --force
+
+      - name: verify:quick
+        run: corepack pnpm verify:quick
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+
+      # verify:local-data --spike 必须在 electron-builder 之前跑：
+      # pnpm install 默认编译 better_sqlite3.node 为 Node.js ABI，
+      # verify:local-data 用 Node.js 跑需要 Node.js ABI。
+      # electron-builder 的 @electron/rebuild 会重编译为 Electron ABI，覆盖 Node.js ABI。
+      - name: verify:local-data --spike (Node.js ABI, save metrics)
+        run: |
+          set -o pipefail
+          corepack pnpm verify:local-data -- --spike 2>&1 | tee local-data-metrics.log
+        shell: bash
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+
+      - name: Clean release directory before packaging
+        run: |
+          rm -rf apps/desktop/release/*
+          echo "release/ cleaned, ready for ${{ matrix.arch }} packaging"
+        shell: bash
+
+      - name: Package desktop artifact (${{ matrix.target }}-${{ matrix.arch }})
+        run: |
+          corepack pnpm --filter @designwan/desktop exec electron-builder --${{ matrix.target }} --${{ matrix.arch }} --publish never
+        env:
+          GH_TOKEN: ''
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+
+      - name: Resolve exact artifact path
+        id: artifact
+        shell: bash
+        run: |
+          set -e
+          GLOB="${{ matrix.artifact_glob }}"
+          shopt -s nullglob
+          MATCHES=( $GLOB )
+          if [ "${#MATCHES[@]}" -ne 1 ]; then
+            echo "ERROR: expected exactly one artifact matching $GLOB, found ${#MATCHES[@]}"
+            echo "release/ contents:"
+            ls -la apps/desktop/release/ || true
+            find apps/desktop/release -type f 2>/dev/null | head -20 || true
+            exit 1
+          fi
+          ARTIFACT=$(cd "$(dirname "${MATCHES[0]}")" && pwd -P)/$(basename "${MATCHES[0]}")
+          echo "path=$ARTIFACT" >> $GITHUB_OUTPUT
+          echo "Resolved artifact: $ARTIFACT"
+
+      - name: Verify executable architecture matches matrix
+        shell: bash
+        run: |
+          set -e
+          ARTIFACT="${{ steps.artifact.outputs.path }}"
+          EXPECTED_ARCH="${{ matrix.arch }}"
+          if [ ! -f "$ARTIFACT" ]; then
+            echo "ERROR: artifact not found at $ARTIFACT"
+            exit 1
+          fi
+          echo "✓ artifact exists: $ARTIFACT"
+          FILE_INFO=$(file "$ARTIFACT")
+          echo "file info: $FILE_INFO"
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            if [[ "$EXPECTED_ARCH" == "arm64" ]]; then
+              echo "$FILE_INFO" | grep -q "arm64" || { echo "ERROR: expected arm64, got: $FILE_INFO"; exit 1; }
+            elif [[ "$EXPECTED_ARCH" == "x64" ]]; then
+              echo "$FILE_INFO" | grep -q "x86_64" || { echo "ERROR: expected x86_64, got: $FILE_INFO"; exit 1; }
+            fi
+            echo "✓ macOS executable architecture matches: $EXPECTED_ARCH"
+          elif [[ "$RUNNER_OS" == "Windows" ]]; then
+            echo "$FILE_INFO" | grep -q "PE32+" || { echo "ERROR: expected PE32+ x64 binary, got: $FILE_INFO"; exit 1; }
+            echo "$FILE_INFO" | grep -Eqi "x86-64|x86_64|AMD64" || { echo "ERROR: expected AMD64/x86-64, got: $FILE_INFO"; exit 1; }
+            if echo "$FILE_INFO" | grep -qi "80386"; then
+              echo "ERROR: rejected 32-bit 80386 binary: $FILE_INFO"
+              exit 1
+            fi
+            echo "✓ Windows PE32+ AMD64 executable valid"
+          fi
+
+      # 校验 native 模块架构：better_sqlite3.node 被 asarUnpack 到 app.asar.unpacked/
+      - name: Verify native module architecture matches matrix
+        shell: bash
+        run: |
+          set -e
+          EXPECTED_ARCH="${{ matrix.arch }}"
+          ARTIFACT_DIR="$(dirname "${{ steps.artifact.outputs.path }}")"
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            APP_ROOT="$ARTIFACT_DIR/../Resources"
+          elif [[ "$RUNNER_OS" == "Windows" ]]; then
+            APP_ROOT="$ARTIFACT_DIR/../resources"
+          fi
+          APP_ROOT="$(cd "$APP_ROOT" && pwd -P)"
+          NODE_PATH="$APP_ROOT/app.asar.unpacked/node_modules/better-sqlite3-multiple-ciphers/build/Release/better_sqlite3.node"
+          if [ ! -f "$NODE_PATH" ]; then
+            echo "ERROR: better_sqlite3.node not found at $NODE_PATH"
+            find "$APP_ROOT" -name "better_sqlite3.node" 2>/dev/null || true
+            exit 1
+          fi
+          echo "✓ better_sqlite3.node exists: $NODE_PATH"
+          VEC_PATH="$APP_ROOT/app.asar.unpacked/dist/main/spike-vec/vec0.*"
+          if ! ls $VEC_PATH 1>/dev/null 2>&1; then
+            echo "ERROR: vec0 native extension not found at $VEC_PATH"
+            find "$APP_ROOT" -name "vec0.*" 2>/dev/null || true
+            exit 1
+          fi
+          echo "✓ vec0 extension exists: $(ls $VEC_PATH)"
+          NODE_INFO=$(file "$NODE_PATH")
+          echo "native module info: $NODE_INFO"
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            if [[ "$EXPECTED_ARCH" == "arm64" ]]; then
+              echo "$NODE_INFO" | grep -q "arm64" || { echo "ERROR: expected arm64 native module, got: $NODE_INFO"; exit 1; }
+            elif [[ "$EXPECTED_ARCH" == "x64" ]]; then
+              echo "$NODE_INFO" | grep -q "x86_64" || { echo "ERROR: expected x86_64 native module, got: $NODE_INFO"; exit 1; }
+            fi
+          elif [[ "$RUNNER_OS" == "Windows" ]]; then
+            echo "$NODE_INFO" | grep -q "PE32+" || { echo "ERROR: expected PE32+ native module, got: $NODE_INFO"; exit 1; }
+            echo "$NODE_INFO" | grep -Eqi "x86-64|x86_64|AMD64" || { echo "ERROR: expected AMD64 native module, got: $NODE_INFO"; exit 1; }
+          fi
+          echo "✓ native module architecture matches: $EXPECTED_ARCH"
+
+      # 从真实 Packaged App 内执行核心 Spike，结果保存到 spike-result.json
+      - name: Packaged Spike smoke (real packaged Electron)
+        run: |
+          node scripts/verify/packaged-spike-smoke.mjs \
+            --artifact="${{ steps.artifact.outputs.path }}" \
+            --output=apps/desktop/release/spike-result.json
+        shell: bash
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+
+      # 上传安装包 + Spike JSON + 性能/体积结果
+      - name: Upload Spike artifact (${{ matrix.artifact_name }})
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: |
+            apps/desktop/release/*
+            local-data-metrics.log
+          if-no-files-found: error
+          retention-days: 7
+
   not-implemented-gates:
     name: not-implemented gates must fail honestly
     runs-on: ubuntu-latest

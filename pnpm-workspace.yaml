@@ -9,3 +9,8 @@ allowBuilds:
   # M0-02 本地持久化 Spike 原生依赖：精确锁版本，禁止 ^/*/latest
   better-sqlite3-multiple-ciphers: true
   sqlite-vec: true
+# M0-02 02-E：better-sqlite3-multiple-ciphers 进 dependencies 后，electron-builder 触发
+# @electron/rebuild 为 Electron ABI 重编原生模块。本地默认 Python 3.13 已移除 distutils，
+# node-gyp 9.x 不兼容。override 到 11.x 以支持 Python 3.13。
+overrides:
+  node-gyp: ^11.0.0

@@ -7,9 +7,20 @@
     "output": "release",
     "buildResources": "buildResources"
   },
-  "files": ["dist/main/**/*", "dist/preload/**/*", "dist/renderer/**/*", "package.json"],
+  "files": [
+    "dist/main/**/*",
+    "dist/preload/**/*",
+    "dist/renderer/**/*",
+    "package.json",
+    "!**/.turbo",
+    "!**/.turbo/**",
+    "!**/*.tsbuildinfo",
+    "!**/.DS_Store",
+    "!**/.git",
+    "!**/.git/**"
+  ],
   "asar": true,
-  "asarUnpack": [],
+  "asarUnpack": ["dist/main/spike-vec/**", "node_modules/better-sqlite3-multiple-ciphers/**"],
   "mac": {
     "category": "public.app-category.productivity",
     "target": ["dmg"],
