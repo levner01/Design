@@ -271,14 +271,22 @@ jobs:
       # verify:local-data --spike 必须在 electron-builder 之前跑：
       # verify:local-data 用 Node.js 跑需要 Node.js ABI。
       # electron-builder 的 @electron/rebuild 会重编译为 Electron ABI，覆盖 Node.js ABI。
+      #
+      # pnpm install 默认下载 Electron ABI 的 prebuild（NODE_MODULE_VERSION 130），
+      # 但 verify:local-data --spike 用 Node.js 24 跑需要 ABI 137。
+      # 方案：用 prebuild-install -r node --force 重新下载 Node.js prebuild。
+      #
+      # 为什么不用 node-gyp rebuild：
+      #   - Windows runner 升级到 VS 18 (VS 2026)，node-gyp 11.5.0 尚未支持，
+      #     报错 "unknown version \"undefined\" found at ...Microsoft Visual Studio\18\Enterprise"。
+      #   - m4heshd/better-sqlite3-multiple-ciphers v12.11.1 releases 已提供全平台
+      #     Node.js 24 (ABI 137) prebuild（darwin-arm64/x64、win32-x64、linux-*），
+      #     直接用 prebuild-install 下载即可，无需本地编译。
       - name: Rebuild better-sqlite3 for Node.js ABI (not Electron)
         run: |
           set -e
           cd node_modules/.pnpm/better-sqlite3-multiple-ciphers@12.11.1/node_modules/better-sqlite3-multiple-ciphers
-          # prebuild-install 可能下载 Electron ABI 的预构建版本（NODE_MODULE_VERSION 130），
-          # 但 verify:local-data --spike 用 Node.js 24 跑需要 ABI 137。
-          # 强制用 node-gyp 为当前 Node.js 重编译（pnpm-workspace.yaml override node-gyp ^11）。
-          npx node-gyp rebuild --release
+          npx prebuild-install -r node --force
           node -e "const v=require('./build/Release/better_sqlite3.node'); console.log('node abi ok:', process.versions.modules)"
         shell: bash
 
