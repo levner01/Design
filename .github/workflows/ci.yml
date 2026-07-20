@@ -385,10 +385,14 @@ jobs:
           set -e
           EXPECTED_ARCH="${{ matrix.arch }}"
           ARTIFACT_DIR="$(dirname "${{ steps.artifact.outputs.path }}")"
+          # macOS exe 在 <app>.app/Contents/MacOS/，Resources 在 Contents/Resources/，
+          # 所以用 ../Resources 回到 Contents/ 再进 Resources/。
+          # Windows exe 在 win-unpacked/，resources 是 win-unpacked 的子目录（同级），
+          # 不需要 ..（加 .. 会变成 win-unpacked/../resources = release/resources，错）。
           if [[ "$RUNNER_OS" == "macOS" ]]; then
             APP_ROOT="$ARTIFACT_DIR/../Resources"
           elif [[ "$RUNNER_OS" == "Windows" ]]; then
-            APP_ROOT="$ARTIFACT_DIR/../resources"
+            APP_ROOT="$ARTIFACT_DIR/resources"
           fi
           APP_ROOT="$(cd "$APP_ROOT" && pwd -P)"
           NODE_PATH="$APP_ROOT/app.asar.unpacked/node_modules/better-sqlite3-multiple-ciphers/build/Release/better_sqlite3.node"
