@@ -182,7 +182,8 @@ export async function runSpike() {
     allOk = false;
     for (const c of negResult.cases.filter((x) => !x.ok)) {
       console.log(
-        `       FAIL: ${c.name} (${c.reasonCode}) — neg:${c.negReason} pos:${c.posReason}`,
+        `       FAIL: ${c.name} (${c.reasonCode}) — neg:${c.negReason} pos:${c.posReason}` +
+          (c.error ? ` error:${c.error}` : ''),
       );
     }
   }

@@ -135,7 +135,7 @@ const cases = [
             : 'encrypted DB header still leaks',
         };
       } finally {
-        rmSync(dir, { recursive: true, force: true });
+        rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
       }
     },
   },
@@ -184,7 +184,7 @@ const cases = [
           posReason: posOk ? 'correct key reads data' : 'correct key failed',
         };
       } finally {
-        rmSync(dir, { recursive: true, force: true });
+        rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
       }
     },
   },
@@ -222,7 +222,7 @@ const cases = [
           posReason: posOk ? 'valid migration SQL applied' : 'valid SQL failed',
         };
       } finally {
-        rmSync(dir, { recursive: true, force: true });
+        rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
       }
     },
   },
@@ -270,7 +270,7 @@ const cases = [
           posReason: posOk ? 'fresh DB after corruption cleanup reads ok' : 'recovery failed',
         };
       } finally {
-        rmSync(dir, { recursive: true, force: true });
+        rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
       }
     },
   },
@@ -312,7 +312,7 @@ const cases = [
             : `after delete, MATCH returned ${after.length} rows`,
         };
       } finally {
-        rmSync(dir, { recursive: true, force: true });
+        rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
       }
     },
   },
@@ -332,7 +332,10 @@ const cases = [
         caught = e;
       }
       const negOk =
-        !!caught && /not found|no such file|extension|loadExtension/i.test(String(caught?.message));
+        !!caught &&
+        /not found|no such file|extension|loadExtension|could not be found|module could not be/i.test(
+          String(caught?.message),
+        );
       // 正向：真实路径
       const realPath = resolveVecLoadablePath();
       const posOk = existsSync(realPath);
@@ -387,7 +390,7 @@ const cases = [
             : `after delete, vec0 returned ${after.length} rows`,
         };
       } finally {
-        rmSync(dir, { recursive: true, force: true });
+        rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
       }
     },
   },
@@ -429,7 +432,7 @@ const cases = [
             : 'encrypted DB leaks Canary',
         };
       } finally {
-        rmSync(dir, { recursive: true, force: true });
+        rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
       }
     },
   },

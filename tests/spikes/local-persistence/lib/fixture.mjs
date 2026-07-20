@@ -133,10 +133,15 @@ export function createFixtureDir(prefix = 'spike') {
 
 /**
  * 删除目录（递归）。
+ *
+ * Windows 上 better-sqlite3 close() 后可能短暂保持文件句柄（WAL/shm），
+ * 导致 rmSync 报 EPERM。加 maxRetries + retryDelay 让 Node.js 自动重试。
+ * macOS/Linux 无此问题，maxRetries 不会影响行为。
+ *
  * @param {string} dir
  */
 export function cleanupFixtureDir(dir) {
-  rmSync(dir, { recursive: true, force: true });
+  rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 }
 
 /**
