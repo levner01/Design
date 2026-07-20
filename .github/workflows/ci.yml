@@ -298,6 +298,24 @@ jobs:
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
 
+      # verify:local-data 用 Node.js 跑完，better_sqlite3.node 是 ABI 137（Node.js 24）。
+      # 但是 packaged-spike-smoke 用 Electron 33（ABI 130）跑，必须恢复 Electron ABI。
+      # 上一步 prebuild-install -r node 把 ABI 130 的 prebuild 覆盖成了 ABI 137。
+      # electron-builder 的 @electron/rebuild 理应重编译为 Electron ABI，但实测
+      # 在 prebuild-install 之后会跳过重编译（可能因为 prebuild 标记误判已安装）。
+      # 因此显式用 prebuild-install -r electron 下载 Electron 33 (ABI 130) prebuild 覆盖回。
+      # 这样 electron-builder 打包时 @electron/rebuild 检测到 ABI 已匹配，直接复制。
+      - name: Rebuild better-sqlite3 for Electron ABI (for packaged app)
+        run: |
+          set -e
+          ELECTRON_VERSION=$(grep -m1 "^  electron@" pnpm-lock.yaml | sed 's/^  electron@//; s/:$//')
+          echo "Electron version: $ELECTRON_VERSION"
+          cd node_modules/.pnpm/better-sqlite3-multiple-ciphers@12.11.1/node_modules/better-sqlite3-multiple-ciphers
+          npx prebuild-install -r electron --target "$ELECTRON_VERSION" --force
+          ls -la build/Release/better_sqlite3.node
+          file build/Release/better_sqlite3.node
+        shell: bash
+
       - name: Clean release directory before packaging
         run: |
           rm -rf apps/desktop/release/*
